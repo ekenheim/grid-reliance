@@ -249,26 +249,38 @@ class EntsoeFetchError(Exception):
 def fetch_generation(token: str, zone_id: str, eic: str, year: int, month: int) -> list[dict]:
     """Fetch actual wind generation for one zone/month.
 
-    Raises EntsoeFetchError with the API reason string when the platform
-    returns an Acknowledgement_MarketDocument (e.g. "No matching data found").
-    Returns an empty list only when the document is valid but contains zero
-    wind (B18/B19) TimeSeries — which means data genuinely doesn't exist for
-    that area at that granularity.
+    Makes two server-side filtered A75 requests — one for B19 (wind onshore)
+    and one for B18 (wind offshore) — using the official psrType query parameter.
+    This bypasses any client-side PSR filtering in _parse_generation and gives
+    a definitive answer: if the server returns "No matching data" with psrType
+    applied, that production type genuinely has no data for this area/period.
 
-    A75 / Actual Generation Per Production Type only accepts in_Domain.
+    Raises RuntimeError on hard API errors (authentication, invalid domain, …).
+    Returns [] when neither wind type has data published.
     """
     period_start, period_end = month_window(year, month)
-    params = {
-        "documentType": "A75",
-        "processType": "A16",
-        "in_Domain": eic,
-        "periodStart": period_start,
-        "periodEnd": period_end,
-    }
-    xml_text = _get(params, token)
-    # _check_error raises RuntimeError on Acknowledgement_MarketDocument
-    _check_error(xml_text, context=f"generation {zone_id} {year}-{month:02d}")
-    return _parse_generation(xml_text, zone_id)
+    rows: list[dict] = []
+    for psr_code in ("B19", "B18"):  # onshore first, offshore second
+        params = {
+            "documentType": "A75",
+            "processType": "A16",
+            "in_Domain": eic,
+            "psrType": psr_code,
+            "periodStart": period_start,
+            "periodEnd": period_end,
+        }
+        xml_text = _get(params, token)
+        try:
+            _check_error(xml_text, context=f"generation {zone_id} {psr_code} {year}-{month:02d}")
+            rows.extend(_parse_generation(xml_text, zone_id))
+        except RuntimeError as exc:
+            err = str(exc)
+            if "No matching data" in err or "no matching data" in err.lower():
+                # Not an error — this PSR type simply isn't published for this area/period.
+                pass
+            else:
+                raise
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -375,16 +387,26 @@ def upload_to_bronze(local_path: Path, s3_key: str) -> bool:
         aws_access_key_id=os.environ.get("BRONZE_ACCESS_KEY", ""),
         aws_secret_access_key=os.environ.get("BRONZE_SECRET_KEY", ""),
         region_name=os.environ.get("BRONZE_REGION", "us-east-1"),
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=15,
+            read_timeout=120,
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        ),
     )
     bucket = os.environ.get("BRONZE_BUCKET", "grid-resilience-bronze")
-    try:
-        client.upload_file(str(local_path), bucket, s3_key)
-        print(f"  Uploaded to s3://{bucket}/{s3_key}")
-        return True
-    except Exception as exc:
-        print(f"  Upload failed: {exc}", file=sys.stderr)
-        return False
+    for attempt in range(1, 4):
+        try:
+            client.upload_file(str(local_path), bucket, s3_key)
+            print(f"  Uploaded to s3://{bucket}/{s3_key}")
+            return True
+        except Exception as exc:
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+            else:
+                print(f"  Upload failed after 3 attempts: {exc}", file=sys.stderr)
+    return False
 
 
 def _write_csv(rows: list[dict], path: Path) -> None:

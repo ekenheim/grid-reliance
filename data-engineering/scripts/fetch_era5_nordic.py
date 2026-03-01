@@ -113,16 +113,27 @@ def upload_to_bronze(local_path: Path, s3_key: str) -> bool:
         aws_access_key_id=os.environ.get("BRONZE_ACCESS_KEY", ""),
         aws_secret_access_key=os.environ.get("BRONZE_SECRET_KEY", ""),
         region_name=os.environ.get("BRONZE_REGION", "us-east-1"),
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=15,
+            read_timeout=120,
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        ),
     )
     bucket = os.environ.get("BRONZE_BUCKET", "grid-resilience-bronze")
-    try:
-        client.upload_file(str(local_path), bucket, s3_key)
-        print(f"Uploaded to s3://{bucket}/{s3_key}")
-        return True
-    except Exception as e:
-        print(f"Upload failed: {e}", file=sys.stderr)
-        return False
+    for attempt in range(1, 4):
+        try:
+            client.upload_file(str(local_path), bucket, s3_key)
+            print(f"Uploaded to s3://{bucket}/{s3_key}")
+            return True
+        except Exception as e:
+            if attempt < 3:
+                import time as _time
+                _time.sleep(2 ** attempt)
+            else:
+                print(f"Upload failed after 3 attempts: {e}", file=sys.stderr)
+    return False
 
 
 def _load_cdsapirc() -> tuple[str, str] | None:

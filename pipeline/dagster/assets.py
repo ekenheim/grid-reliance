@@ -45,17 +45,32 @@ def _s3_key_exists(client, bucket: str, key: str) -> bool:
 
 
 def _bronze_upload(client, bucket: str, local_path: Path, s3_key: str, log) -> bool:
-    """Upload a local file to the Bronze S3 bucket, skipping if the key already exists."""
+    """Upload a local file to the Bronze S3 bucket, skipping if the key already exists.
+
+    Retries up to 3 times with exponential back-off to survive transient Rook
+    RGW connect timeouts (seen when the Dagster runner pod and the RGW are not
+    on the same node and an ARP/route flush briefly drops the path).
+    """
     if _s3_key_exists(client, bucket, s3_key):
         log.info("Skip %s — already in s3://%s/%s", local_path.name, bucket, s3_key)
         return True
-    try:
-        client.upload_file(str(local_path), bucket, s3_key)
-        log.info("Uploaded %s -> s3://%s/%s", local_path.name, bucket, s3_key)
-        return True
-    except Exception as exc:
-        log.warning("Bronze upload failed for %s: %s", s3_key, exc)
-        return False
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.upload_file(str(local_path), bucket, s3_key)
+            log.info("Uploaded %s -> s3://%s/%s", local_path.name, bucket, s3_key)
+            return True
+        except Exception as exc:
+            if attempt < max_attempts:
+                wait = 2 ** attempt  # 2 s, 4 s
+                log.warning(
+                    "Upload attempt %d/%d failed for %s: %s — retrying in %ds",
+                    attempt, max_attempts, s3_key, exc, wait,
+                )
+                time.sleep(wait)
+            else:
+                log.warning("Bronze upload failed after %d attempts for %s: %s", max_attempts, s3_key, exc)
+    return False
 
 
 @asset(
@@ -196,9 +211,14 @@ def fetch_entsoe_bronze(context) -> Output[None]:
                     zone_gen = _entsoe.fetch_generation(token, zone_id, eic, year, month)
                     if not zone_gen:
                         context.log.warning(
-                            "A75 returned valid document but zero wind TimeSeries for "
-                            "area %s %d-%02d (no B18/B19 data at this granularity)",
+                            "No wind generation data (B18/B19) published for area %s %d-%02d "
+                            "(server confirmed no matching data for both psrType filters)",
                             zone_id, year, month,
+                        )
+                    else:
+                        context.log.info(
+                            "Fetched %d wind generation rows for area %s %d-%02d",
+                            len(zone_gen), zone_id, year, month,
                         )
                     gen_rows.extend(zone_gen)
                 except Exception as exc:

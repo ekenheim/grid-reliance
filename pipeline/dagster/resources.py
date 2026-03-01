@@ -19,7 +19,16 @@ def _rook_s3_client(host: str, port: str, access_key: str, secret_key: str):
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name="us-east-1",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=15,       # seconds to establish TCP connection
+            read_timeout=120,         # seconds to wait for a response once connected
+            retries={
+                "max_attempts": 5,
+                "mode": "adaptive",   # back-off on throttling + transient errors
+            },
+        ),
     )
 
 
