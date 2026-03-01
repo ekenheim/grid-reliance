@@ -44,6 +44,25 @@ def _s3_key_exists(client, bucket: str, key: str) -> bool:
         return False
 
 
+def _check_s3_reachable(endpoint_url: str, timeout: int = 3) -> tuple[bool, str]:
+    """TCP-level connectivity check against the S3 endpoint.
+
+    Returns (reachable, reason).  Runs before any boto3 upload so we fail fast
+    with a useful message instead of burning 15 s × N retries on a NetworkPolicy
+    block that will never resolve within a run.
+    """
+    import socket
+    from urllib.parse import urlparse
+    parsed = urlparse(endpoint_url)
+    host = parsed.hostname or ""
+    port = parsed.port or 80
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "ok"
+    except OSError as exc:
+        return False, str(exc)
+
+
 def _bronze_upload(client, bucket: str, local_path: Path, s3_key: str, log) -> bool:
     """Upload a local file to the Bronze S3 bucket, skipping if the key already exists.
 
@@ -118,6 +137,20 @@ def fetch_era5_bronze(context) -> Output[None]:
     cds = cdsapi.Client(url=url, key=key)
 
     bronze = context.resources.bronze
+
+    # Pre-flight: verify Bronze is reachable before spending minutes downloading ERA5.
+    if bronze is not None:
+        endpoint = f"http://{os.environ.get('BRONZE_BUCKET_HOST', '')}:{os.environ.get('BRONZE_BUCKET_PORT', '80')}"
+        reachable, reason = _check_s3_reachable(endpoint)
+        if not reachable:
+            raise RuntimeError(
+                f"Bronze bucket endpoint {endpoint} is not reachable (TCP connect failed: {reason}). "
+                "Check that a NetworkPolicy allows Dagster run pods (namespace: datasci) to reach "
+                "the Rook Ceph RGW service (rook-ceph namespace) on port 80. "
+                "Fix the NetworkPolicy before retrying — retrying uploads will not help."
+            )
+        context.log.info("Bronze endpoint %s reachable — proceeding with uploads.", endpoint)
+
     uploaded = skipped = failed = 0
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,6 +226,20 @@ def fetch_entsoe_bronze(context) -> Output[None]:
         )
 
     bronze = context.resources.bronze
+
+    # Pre-flight: verify Bronze is reachable before spending time on API fetches.
+    if bronze is not None:
+        endpoint = f"http://{os.environ.get('BRONZE_BUCKET_HOST', '')}:{os.environ.get('BRONZE_BUCKET_PORT', '80')}"
+        reachable, reason = _check_s3_reachable(endpoint)
+        if not reachable:
+            raise RuntimeError(
+                f"Bronze bucket endpoint {endpoint} is not reachable (TCP connect failed: {reason}). "
+                "Check that a NetworkPolicy allows Dagster run pods (namespace: datasci) to reach "
+                "the Rook Ceph RGW service (rook-ceph namespace) on port 80. "
+                "Fix the NetworkPolicy before retrying — retrying uploads will not help."
+            )
+        context.log.info("Bronze endpoint %s reachable — proceeding.", endpoint)
+
     gen_ok = load_ok = failed = 0
 
     start_dt = _entsoe.parse_date(start_raw)
