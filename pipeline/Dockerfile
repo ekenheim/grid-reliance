@@ -19,6 +19,9 @@ COPY pipeline/dagster/ /app/pipeline/dagster/
 COPY pipeline/model/ /app/pipeline/model/
 COPY pipeline/streaming/ /app/pipeline/streaming/
 
+# Fetch scripts (ERA5 + ENTSO-E) used by the bronze fetch Dagster assets
+COPY data-engineering/scripts/ /app/data-engineering/scripts/
+
 ENV DAGSTER_HOME=/opt/dagster
 RUN mkdir -p /opt/dagster && chmod 777 /opt/dagster
 
