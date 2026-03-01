@@ -1,0 +1,18 @@
+# Ray (submitter pod — connects to existing ray-kuberay cluster)
+# Pin to the version matching the ray-kuberay cluster:
+#   kubectl exec -n datasci -l ray.io/node-type=head -- ray --version
+ray[default]>=2.40.0
+
+# Bayesian model dependencies (also installed on workers via runtime_env)
+pymc>=5.27.1,<6
+nutpie>=0.16
+arviz>=0.23.4,<0.24
+
+# Data handling
+numpy>=1.26
+pandas>=2.2
+pyarrow>=17.0
+
+# S3 access
+boto3>=1.42.51
+botocore>=1.35

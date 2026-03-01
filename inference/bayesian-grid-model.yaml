@@ -1,9 +1,18 @@
-# KubeRay RayJob: run HSGP inference (Silver -> Gold).
-# Uses existing Ray cluster in datasci. Gold = write (envFrom OBC); Silver = read (env from Silver OBC).
+# KubeRay RayJob: distributed HSGP inference (Silver → Gold).
 #
-# In home-ops: ensure RayCluster has label ray.io/cluster=<cluster-name> (or match clusterSelector).
-# Replace secret/configMap names with actual Rook ObjectBucketClaim-generated names for Gold and Silver.
-# Image must have pipeline, pymc, nutpie, boto3, pandas (e.g. custom image from this repo).
+# Each MCMC chain runs as an independent ray.remote task on a separate worker
+# in the existing ray-kuberay cluster. The submitter pod connects to the cluster
+# via ray.init(address="auto") and dispatches N_CHAINS tasks.
+#
+# Pre-requisites:
+#   - ray-kuberay cluster running in datasci namespace
+#   - grid-resilience-inference image published to GHCR
+#   - Silver bucket has silver/grid_snapshots.parquet (written by Spark ingest)
+#   - Gold OBC secret/configmap grid-resilience-gold provisioned
+#   - Silver OBC secret/configmap grid-resilience-silver provisioned
+#
+# Ray version: run the following to verify compatibility with the base image:
+#   kubectl exec -n datasci -l ray.io/node-type=head -- ray --version
 ---
 apiVersion: ray.io/v1
 kind: RayJob
@@ -11,26 +20,24 @@ metadata:
   name: grid-resilience-bayesian-inference
   namespace: datasci
 spec:
-  # Use existing KubeRay cluster (head: ray-kuberay-head-svc.datasci.svc.cluster.local:10001)
   clusterSelector:
     ray.io/cluster: ray-kuberay
-  # Run from repo root (image: COPY . /app, WORKDIR /app). Gold = write, Silver = read.
   entrypoint: python -m inference.run_inference
   submitterPodTemplate:
     spec:
       restartPolicy: Never
       containers:
         - name: submitter
-          # Build from repo root: Dockerfile with pipeline + inference deps (pymc, nutpie, boto3).
-          image: ghcr.io/YOUR_ORG/grid-resilience-inference:latest
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/ekenheim/grid-resilience-inference:latest
+          imagePullPolicy: Always
+          # Gold (write): primary envFrom
           envFrom:
             - secretRef:
                 name: grid-resilience-gold
             - configMapRef:
                 name: grid-resilience-gold
           env:
-            # Silver (read): prefix SILVER_ so both buckets can be configured
+            # Silver (read): explicit SILVER_ prefix to avoid collision with Gold vars
             - name: SILVER_AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

@@ -20,20 +20,46 @@ TEMPORAL_SCALE_H = 168.0
 
 
 @asset(
-    description="Raw weather observations from Rook Silver bucket (written by Spark ERA5/ENTSO-E ingest).",
+    description=(
+        "Raw weather observations. Primary source: Rook Silver bucket "
+        "(silver/grid_snapshots.parquet written by Spark ERA5/ENTSO-E ingest). "
+        "Falls back to Postgres weather_obs when Silver is not configured or the key is absent."
+    ),
     io_manager_key="gold_io_manager",
-    required_resource_keys={"silver"},
+    required_resource_keys={"silver", "postgres"},
 )
 def raw_weather_obs(context) -> Output[pd.DataFrame]:
-    """Load raw weather observations from silver/grid_snapshots.parquet in the Silver bucket."""
+    """Load raw weather observations — Silver bucket first, Postgres fallback."""
     silver = context.resources.silver
-    response = silver["client"].get_object(
-        Bucket=silver["bucket"], Key="silver/grid_snapshots.parquet"
-    )
-    df = pd.read_parquet(io.BytesIO(response["Body"].read()))
+
+    if silver is not None:
+        try:
+            response = silver["client"].get_object(
+                Bucket=silver["bucket"], Key="silver/grid_snapshots.parquet"
+            )
+            df = pd.read_parquet(io.BytesIO(response["Body"].read()))
+            if not df.empty:
+                context.log.info("Loaded %d rows from Silver bucket.", len(df))
+                return Output(df, metadata={"num_rows": len(df), "source": "rook-silver"})
+            context.log.warning("Silver key returned empty Parquet; falling back to Postgres.")
+        except Exception as exc:
+            context.log.warning(
+                "Silver read failed (%s); falling back to Postgres weather_obs table.", exc
+            )
+
+    # Postgres fallback — used during local dev and before Spark ingest is deployed
+    from sqlalchemy import create_engine, text
+    conn_string = context.resources.postgres
+    engine = create_engine(conn_string)
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            text("SELECT timestamp, region_id, wind_speed_mps FROM weather_obs ORDER BY timestamp, region_id"),
+            conn,
+        )
     if df.empty:
         df = pd.DataFrame(columns=["timestamp", "region_id", "wind_speed_mps"])
-    return Output(df, metadata={"num_rows": len(df), "source": "rook-silver"})
+    context.log.info("Loaded %d rows from Postgres weather_obs (fallback).", len(df))
+    return Output(df, metadata={"num_rows": len(df), "source": "postgres-fallback"})
 
 
 @asset(

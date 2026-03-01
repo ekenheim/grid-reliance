@@ -1,10 +1,11 @@
-# SparkApplication: read from Bronze (Rook-Ceph), write Silver Parquet for inference.
-# Uses kubeflow Spark Operator (apiVersion: sparkoperator.k8s.io/v1beta2).
+# SparkApplication: ERA5 NetCDF → Silver grid_snapshots.parquet
+# Spark Operator (sparkoperator.k8s.io/v1beta2) in the datasci namespace.
 #
-# In home-ops: replace image with a built image that includes spark_era5_ingest.py
-# (e.g. COPY data-engineering/processing /opt/spark/job) and has Spark + hadoop-aws.
-# Set secret/configMap names to match Rook ObjectBucketClaim output for Silver (write)
-# and optionally Bronze (read). Same RGW credentials often work for both buckets.
+# Bronze (read)  credentials injected via OBC secret/configmap grid-resilience-bronze.
+# Silver (write) credentials injected via OBC secret/configmap grid-resilience-silver.
+#
+# Trigger manually or wire into a Dagster sensor / Argo Workflow after
+# fetch_era5_nordic.py --upload-bronze completes.
 ---
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -16,9 +17,9 @@ spec:
   mode: cluster
   pythonVersion: "3"
   mainApplicationFile: local:///opt/spark/job/spark_era5_ingest.py
-  image: apache/spark:3.5.0-python3
-  imagePullPolicy: IfNotPresent
-  sparkVersion: "3.5.0"
+  image: ghcr.io/ekenheim/grid-resilience-data-engineering:latest
+  imagePullPolicy: Always
+  sparkVersion: "4.0.2"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
@@ -28,17 +29,39 @@ spec:
     coreLimit: "1200m"
     memory: "2Gi"
     serviceAccount: default
+    # Silver (write): primary envFrom so BUCKET_HOST / AWS_* resolve to Silver OBC
     envFrom:
       - secretRef:
           name: grid-resilience-silver
       - configMapRef:
           name: grid-resilience-silver
     env:
+      # Bronze (read): explicit prefixed vars so both buckets are unambiguous
+      - name: BRONZE_BUCKET_HOST
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_HOST
+      - name: BRONZE_BUCKET_PORT
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_PORT
       - name: BRONZE_BUCKET_NAME
         valueFrom:
           configMapKeyRef:
             name: grid-resilience-bronze
             key: BUCKET_NAME
+      - name: BRONZE_AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: grid-resilience-bronze
+            key: AWS_ACCESS_KEY_ID
+      - name: BRONZE_AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: grid-resilience-bronze
+            key: AWS_SECRET_ACCESS_KEY
   executor:
     cores: 2
     memory: "4Gi"
@@ -49,8 +72,28 @@ spec:
       - configMapRef:
           name: grid-resilience-silver
     env:
+      - name: BRONZE_BUCKET_HOST
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_HOST
+      - name: BRONZE_BUCKET_PORT
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_PORT
       - name: BRONZE_BUCKET_NAME
         valueFrom:
           configMapKeyRef:
             name: grid-resilience-bronze
             key: BUCKET_NAME
+      - name: BRONZE_AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: grid-resilience-bronze
+            key: AWS_ACCESS_KEY_ID
+      - name: BRONZE_AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: grid-resilience-bronze
+            key: AWS_SECRET_ACCESS_KEY

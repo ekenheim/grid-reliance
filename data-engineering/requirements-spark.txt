@@ -1,0 +1,16 @@
+# Python packages installed into the Spark 4.0.2 executor image.
+# Must be available on both driver and executor pods (same image).
+
+# S3 access (Bronze read, Silver write via boto3)
+boto3>=1.42.51
+botocore>=1.35
+
+# ERA5 NetCDF processing
+xarray>=2024.1
+netCDF4>=1.7.0
+numpy>=1.26
+scipy>=1.12          # xarray fallback engine and spatial utilities
+
+# Silver write (pandas + pyarrow; avoids hadoop-aws/s3a dependency)
+pandas>=2.2
+pyarrow>=17.0

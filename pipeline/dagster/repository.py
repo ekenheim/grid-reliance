@@ -27,7 +27,7 @@ from pipeline.dagster.jobs import (
     grid_resilience_full_pipeline_job,
     grid_resilience_retrain_job,
 )
-from pipeline.dagster.resources import silver_resource, gold_resource, redpanda_resource
+from pipeline.dagster.resources import silver_resource, gold_resource, postgres_resource, redpanda_resource
 from pipeline.dagster.schedules import retrain_schedule, full_pipeline_schedule
 
 defs = Definitions(
@@ -43,6 +43,7 @@ defs = Definitions(
     resources={
         "silver":                silver_resource,
         "gold":                  gold_resource,
+        "postgres":              postgres_resource,
         "gold_io_manager":       gold_io_manager,
         "gold_pickle_io_manager": gold_pickle_io_manager,
         "noop_io_manager":       noop_io_manager,

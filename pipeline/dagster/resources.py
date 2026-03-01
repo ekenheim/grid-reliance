@@ -25,14 +25,24 @@ def _rook_s3_client(host: str, port: str, access_key: str, secret_key: str):
 
 @resource
 def silver_resource(context):
-    """Rook Ceph Silver bucket (read-only: grid snapshots from Spark ERA5/ENTSO-E ingest)."""
-    client = _rook_s3_client(
-        host=os.environ["SILVER_BUCKET_HOST"],
-        port=os.environ["SILVER_BUCKET_PORT"],
-        access_key=os.environ["SILVER_AWS_ACCESS_KEY_ID"],
-        secret_key=os.environ["SILVER_AWS_SECRET_ACCESS_KEY"],
-    )
-    return {"client": client, "bucket": os.environ["SILVER_BUCKET_NAME"]}
+    """Rook Ceph Silver bucket (read-only: grid snapshots from Spark ERA5/ENTSO-E ingest).
+
+    Returns None when Silver env vars are not set so that raw_weather_obs can
+    fall back to the Postgres synthetic dataset without crashing on startup.
+    """
+    host = os.environ.get("SILVER_BUCKET_HOST", "").strip()
+    port = os.environ.get("SILVER_BUCKET_PORT", "").strip()
+    access_key = os.environ.get("SILVER_AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.environ.get("SILVER_AWS_SECRET_ACCESS_KEY", "").strip()
+    bucket = os.environ.get("SILVER_BUCKET_NAME", "").strip()
+    if not all([host, port, access_key, secret_key, bucket]):
+        context.log.info(
+            "Silver bucket not configured (SILVER_BUCKET_HOST/PORT/CREDS absent) — "
+            "raw_weather_obs will fall back to Postgres."
+        )
+        return None
+    client = _rook_s3_client(host=host, port=port, access_key=access_key, secret_key=secret_key)
+    return {"client": client, "bucket": bucket}
 
 
 @resource
