@@ -48,9 +48,10 @@ On the homelab cluster, point `BRONZE_*` at Ceph RGW (from the ObjectBucketClaim
 
 ### 3. Spark (in-cluster)
 
-Spark jobs will read from Bronze (raw NetCDF/XML), run spatial ETL, and write Silver Parquet. Use **SparkApplication** CRDs (kubeflow Spark Operator). Planned manifests:
+Spark jobs read from Bronze and write model-ready Parquet to Silver. Use **SparkApplication** CRDs (kubeflow Spark Operator):
 
-- `processing/spark-era5-ingest.yaml` — consume ERA5 from Bronze, optional repartition/convert to Parquet.
+- [processing/spark-era5-ingest.yaml](processing/spark-era5-ingest.yaml) — reference manifest: driver/executor env from Rook Silver (write) and Bronze (read) ObjectBucketClaims; runs [spark_era5_ingest.py](processing/spark_era5_ingest.py) (replace with full ERA5/ENTSO-E ETL as needed).
+- [processing/CONTRACT.md](processing/CONTRACT.md) — Silver schema contract: `silver/grid_snapshots.parquet` with columns `timestamp`, `region_id`, `wind_speed_mps` for the inference pipeline.
 - `processing/spark-entsoe-ingest.yaml` — ENTSO-E ingest (when ready).
 
 ## Storage: Bronze / Silver / Gold

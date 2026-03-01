@@ -97,7 +97,7 @@ proj-grid-resilience/
 
 ### Full Platform (Kubernetes)
 
-**Prerequisites:** Access to a Kubernetes cluster with at least 32 GB RAM and AVX2 support.
+**Prerequisites:** Access to a Kubernetes cluster with at least 32 GB RAM and AVX2 support. Storage uses **Rook-Ceph** (Ceph RGW) with Bronze/Silver/Gold buckets; deployment and Flux GitOps live in **home-ops-upgrade**. This repo provides the application code and reference K8s manifests (SparkApplication, RayJob); apply or kustomize them from home-ops as needed.
 
 1. **Bootstrap infrastructure** (Flux GitOps):
 

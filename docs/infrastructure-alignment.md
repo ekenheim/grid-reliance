@@ -16,6 +16,13 @@ Rook creates a **Secret** (e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) and *
 
 Local development can keep using MinIO (`docker compose`) with the same bucket names or prefixes.
 
+## Full platform wiring
+
+- **API:** Point the grid-reliance-api Deployment at the **Gold** bucket so `/forecast` and `/correlations` return real data. Inject env from the Gold ObjectBucketClaim (Secret + ConfigMap). The API supports both MinIO-style env (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) and Rook-style (`BUCKET_HOST`, `BUCKET_PORT`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). If the API runs in a namespace other than `datasci`, replicate or sync the Gold credentials into that namespace.
+- **RayJob (inference):** Reads model-ready Parquet from **Silver**, runs HSGP inference, and writes `dagster/tail_risk_forecasts.parquet` and `dagster/hsgp_model.pkl` to **Gold**. Use the reference manifest `inference/bayesian-grid-model.yaml`; set Gold via `envFrom` and Silver via explicit env with `SILVER_*` prefix so both buckets are configured.
+- **Spark:** SparkApplications read from **Bronze** and write to **Silver** (e.g. `silver/grid_snapshots.parquet` per `data-engineering/processing/CONTRACT.md`). Use the reference manifest `data-engineering/processing/spark-era5-ingest.yaml` with env from the Silver and Bronze ObjectBucketClaims.
+- **Artifact convention:** All writers (Dagster or RayJob) must write `dagster/tail_risk_forecasts.parquet` and `dagster/hsgp_model.pkl` into the **Gold** bucket so the API serves the full version from Rook-Ceph.
+
 ## Compute
 
 - **Ray:** KubeRay cluster in `datasci`; head service `ray-kuberay-head-svc.datasci.svc.cluster.local:10001`. Resources were increased (head 4 CPU / 8Gi, workers up to 8 CPU / 16Gi, max 12 workers).

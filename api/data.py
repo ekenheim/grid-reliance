@@ -1,5 +1,6 @@
 """
-Load forecast and correlation data from MinIO (same layout as Dagster pipeline writes).
+Load forecast and correlation data from S3-compatible storage (MinIO or Ceph RGW).
+Uses the same layout as the Dagster pipeline and inference RayJob write: dagster/ prefix.
 """
 
 import io
@@ -20,21 +21,44 @@ DEFAULT_ZONE_IDS = ["SE1", "SE2", "SE3", "SE4", "NO1", "NO2", "DK1", "DK2", "FI"
 
 
 def _get_s3_client():
-    """Return (s3_client, bucket) or (None, None) if MinIO not configured."""
-    endpoint = (os.environ.get("MINIO_ENDPOINT") or "").strip()
+    """Return (s3_client, bucket) or (None, None) if S3/MinIO not configured.
+
+    Supports two env patterns:
+    - MinIO: MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET, MINIO_REGION
+    - Rook ObjectBucketClaim: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, BUCKET_HOST,
+      BUCKET_PORT, BUCKET_NAME, BUCKET_REGION (endpoint = http://BUCKET_HOST:BUCKET_PORT)
+    """
+    endpoint = (os.environ.get("MINIO_ENDPOINT") or os.environ.get("S3_ENDPOINT") or "").strip()
+    if not endpoint:
+        host = (os.environ.get("BUCKET_HOST") or "").strip()
+        port = (os.environ.get("BUCKET_PORT") or "").strip()
+        if host and port:
+            endpoint = f"http://{host}:{port}"
+        elif host:
+            endpoint = f"http://{host}"
     if not endpoint:
         return None, None
     if not endpoint.startswith("http"):
         endpoint = f"http://{endpoint}"
+    access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID") or ""
+    secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY") or ""
+    if not access_key or not secret_key:
+        return None, None
+    region = (
+        os.environ.get("MINIO_REGION")
+        or os.environ.get("BUCKET_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
     client = boto3.client(
         "s3",
         endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("MINIO_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("MINIO_SECRET_KEY", ""),
-        region_name=os.environ.get("MINIO_REGION", "us-east-1"),
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
-    bucket = os.environ.get("MINIO_BUCKET", "grid-resilience")
+    bucket = os.environ.get("MINIO_BUCKET") or os.environ.get("BUCKET_NAME") or "grid-resilience"
     return client, bucket
 
 

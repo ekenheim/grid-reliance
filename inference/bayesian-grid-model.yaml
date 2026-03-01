@@ -1,0 +1,65 @@
+# KubeRay RayJob: run HSGP inference (Silver -> Gold).
+# Uses existing Ray cluster in datasci. Gold = write (envFrom OBC); Silver = read (env from Silver OBC).
+#
+# In home-ops: ensure RayCluster has label ray.io/cluster=<cluster-name> (or match clusterSelector).
+# Replace secret/configMap names with actual Rook ObjectBucketClaim-generated names for Gold and Silver.
+# Image must have pipeline, pymc, nutpie, boto3, pandas (e.g. custom image from this repo).
+---
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: grid-resilience-bayesian-inference
+  namespace: datasci
+spec:
+  # Use existing KubeRay cluster (head: ray-kuberay-head-svc.datasci.svc.cluster.local:10001)
+  clusterSelector:
+    ray.io/cluster: ray-kuberay
+  # Run from repo root (image: COPY . /app, WORKDIR /app). Gold = write, Silver = read.
+  entrypoint: python -m inference.run_inference
+  submitterPodTemplate:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: submitter
+          # Build from repo root: Dockerfile with pipeline + inference deps (pymc, nutpie, boto3).
+          image: ghcr.io/YOUR_ORG/grid-resilience-inference:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: grid-resilience-gold
+            - configMapRef:
+                name: grid-resilience-gold
+          env:
+            # Silver (read): prefix SILVER_ so both buckets can be configured
+            - name: SILVER_AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: grid-resilience-silver
+                  key: AWS_ACCESS_KEY_ID
+            - name: SILVER_AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grid-resilience-silver
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: SILVER_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: grid-resilience-silver
+                  key: BUCKET_NAME
+            - name: SILVER_BUCKET_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: grid-resilience-silver
+                  key: BUCKET_HOST
+            - name: SILVER_BUCKET_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: grid-resilience-silver
+                  key: BUCKET_PORT
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "2Gi"
+              cpu: "1"

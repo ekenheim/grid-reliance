@@ -28,9 +28,11 @@ Server: **http://127.0.0.1:8000**
 - Forecast (stub): http://127.0.0.1:8000/forecast/SE1?horizon_h=24
 - Correlations (stub): http://127.0.0.1:8000/correlations
 
-Endpoints currently return stub data; wiring to PostgreSQL/MinIO is TODO.
+When S3/MinIO is configured and the **Gold** bucket (or the configured bucket) contains `dagster/tail_risk_forecasts.parquet` and `dagster/hsgp_model.pkl`, the API returns real data (`"status": "ok"`). Otherwise it returns stub data (`"status": "stub"`).
 
 ## Environment
 
-- `PG_CONNECTION_STRING` - PostgreSQL (for real forecasts, when implemented)
-- `MINIO_*` - MinIO for model artifacts (when implemented)
+- **S3-compatible storage (MinIO or Ceph RGW):** Either MinIO-style or Rook-style env.
+  - MinIO: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, optional `MINIO_REGION`.
+  - Rook ObjectBucketClaim: `BUCKET_HOST`, `BUCKET_PORT`, `BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optional `BUCKET_REGION`). Point the bucket at **Gold** so the API reads the artifacts written by the inference RayJob or Dagster.
+- `PG_CONNECTION_STRING` — reserved for future use (e.g. real forecasts from PostgreSQL).

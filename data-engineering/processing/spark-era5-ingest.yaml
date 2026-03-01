@@ -1,0 +1,56 @@
+# SparkApplication: read from Bronze (Rook-Ceph), write Silver Parquet for inference.
+# Uses kubeflow Spark Operator (apiVersion: sparkoperator.k8s.io/v1beta2).
+#
+# In home-ops: replace image with a built image that includes spark_era5_ingest.py
+# (e.g. COPY data-engineering/processing /opt/spark/job) and has Spark + hadoop-aws.
+# Set secret/configMap names to match Rook ObjectBucketClaim output for Silver (write)
+# and optionally Bronze (read). Same RGW credentials often work for both buckets.
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: grid-resilience-era5-ingest
+  namespace: datasci
+spec:
+  type: Python
+  mode: cluster
+  pythonVersion: "3"
+  mainApplicationFile: local:///opt/spark/job/spark_era5_ingest.py
+  image: apache/spark:3.5.0-python3
+  imagePullPolicy: IfNotPresent
+  sparkVersion: "3.5.0"
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 2
+    onFailureRetryInterval: 60
+  driver:
+    cores: 1
+    coreLimit: "1200m"
+    memory: "2Gi"
+    serviceAccount: default
+    envFrom:
+      - secretRef:
+          name: grid-resilience-silver
+      - configMapRef:
+          name: grid-resilience-silver
+    env:
+      - name: BRONZE_BUCKET_NAME
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_NAME
+  executor:
+    cores: 2
+    memory: "4Gi"
+    instances: 2
+    envFrom:
+      - secretRef:
+          name: grid-resilience-silver
+      - configMapRef:
+          name: grid-resilience-silver
+    env:
+      - name: BRONZE_BUCKET_NAME
+        valueFrom:
+          configMapKeyRef:
+            name: grid-resilience-bronze
+            key: BUCKET_NAME
