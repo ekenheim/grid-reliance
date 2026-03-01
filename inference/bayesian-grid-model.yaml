@@ -6,13 +6,14 @@
 #
 # Pre-requisites:
 #   - ray-kuberay cluster running in datasci namespace
-#   - grid-resilience-inference image published to GHCR
+#   - grid-resilience-inference image published to GHCR (submitter pod)
+#   - grid-resilience-ray-worker image published to GHCR (Ray worker pods)
+#     Platform team: point the Ray HelmRelease at the worker image:
+#       workerGroupSpecs[0].template.spec.containers[0].image:
+#         ghcr.io/ekenheim/grid-resilience-ray-worker:latest
 #   - Silver bucket has silver/grid_snapshots.parquet (written by Spark ingest)
 #   - Gold OBC secret/configmap grid-resilience-gold provisioned
 #   - Silver OBC secret/configmap grid-resilience-silver provisioned
-#
-# Ray version: run the following to verify compatibility with the base image:
-#   kubectl exec -n datasci -l ray.io/node-type=head -- ray --version
 ---
 apiVersion: ray.io/v1
 kind: RayJob

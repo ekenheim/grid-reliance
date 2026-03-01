@@ -190,18 +190,18 @@ def main() -> int:
     bronze_secret = (os.environ.get("BRONZE_AWS_SECRET_ACCESS_KEY") or "").strip()
     bronze_bucket = (os.environ.get("BRONZE_BUCKET_NAME") or "grid-resilience-bronze").strip()
 
-    # Silver credentials (write) — primary bucket in the manifest envFrom
-    silver_host   = (os.environ.get("BUCKET_HOST") or "").strip()
-    silver_port   = (os.environ.get("BUCKET_PORT") or "80").strip()
-    silver_access = (os.environ.get("AWS_ACCESS_KEY_ID") or "").strip()
-    silver_secret = (os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()
-    silver_bucket = (os.environ.get("BUCKET_NAME") or "grid-resilience-silver").strip()
+    # Silver credentials (write)
+    silver_host   = (os.environ.get("SILVER_BUCKET_HOST") or "").strip()
+    silver_port   = (os.environ.get("SILVER_BUCKET_PORT") or "80").strip()
+    silver_access = (os.environ.get("SILVER_AWS_ACCESS_KEY_ID") or "").strip()
+    silver_secret = (os.environ.get("SILVER_AWS_SECRET_ACCESS_KEY") or "").strip()
+    silver_bucket = (os.environ.get("SILVER_BUCKET_NAME") or "grid-resilience-silver").strip()
 
     if not bronze_host:
         print("BRONZE_BUCKET_HOST not set — cannot read from Bronze.", file=sys.stderr)
         return 1
     if not silver_host:
-        print("BUCKET_HOST not set — cannot write to Silver.", file=sys.stderr)
+        print("SILVER_BUCKET_HOST not set — cannot write to Silver.", file=sys.stderr)
         return 1
 
     bronze_endpoint = f"http://{bronze_host}:{bronze_port}"

@@ -205,20 +205,11 @@ def train_hsgp_distributed(
 
     # Decorate the sampling function as a Ray remote task.
     # Resource spec: 2 CPUs per chain (nutpie uses threading), 6 GiB memory.
+    # PyMC/nutpie/zarr are pre-installed in the ghcr.io/ekenheim/grid-resilience-ray-worker
+    # image — no runtime_env pip install needed (avoids conda base resolution failures).
     sample_remote = ray.remote(
         num_cpus=2,
         memory=6 * 1024 ** 3,
-        runtime_env={
-            # Ensure workers have PyMC + nutpie even if the Ray cluster image
-            # doesn't include them.  Cached after first install per worker.
-            "pip": [
-                "pymc>=5.27.1,<6",
-                "nutpie>=0.16",
-                "arviz>=0.23.4,<0.24",
-                "pandas>=2.2",
-                "numpy>=1.26",
-            ],
-        },
     )(_sample_one_chain)
 
     futures = [

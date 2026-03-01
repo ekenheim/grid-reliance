@@ -16,8 +16,9 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 COPY data-engineering/requirements-spark.txt /opt/spark/requirements-spark.txt
 RUN pip install --no-cache-dir -r /opt/spark/requirements-spark.txt
 
-# Copy the ingest job and supporting scripts into the standard Spark job path
+# Copy all ingest jobs and supporting scripts into the standard Spark job path
 COPY data-engineering/processing/spark_era5_ingest.py /opt/spark/job/spark_era5_ingest.py
+COPY data-engineering/processing/entsoe_ingest.py     /opt/spark/job/entsoe_ingest.py
 COPY data-engineering/scripts/ /opt/spark/scripts/
 
 # Spark Operator runs the job as the spark user
