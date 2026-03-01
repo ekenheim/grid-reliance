@@ -39,10 +39,14 @@ htmlcov/
 .pyre/
 
 # ============================================================
-# Data files -- these live in MinIO, not in git
+# Data files -- these live in MinIO / Ceph, not in git
 # ============================================================
 generator/csv_data/
 generator/output/
+
+# ERA5 / NetCDF raw and processed data
+*.nc
+data-engineering/era5_nordic/
 
 # Pipeline intermediate data
 pipeline/data/
@@ -50,16 +54,21 @@ pipeline/data/
 # Dagster temp home
 .tmp_dagster_home*/
 
-# Model artifacts
+# Model artifacts (binary; stored in Gold bucket)
 *.pkl
 *.parquet
+*.npy
+
+# MLflow local experiment store (created when MLFLOW_TRACKING_URI=./mlruns)
+mlruns/
 
 # ============================================================
 # Secrets and environment
 # ============================================================
 .env
-.env.*
-*.env.local
+.env.local
+.env.*.local
+# .env.example is intentionally NOT ignored — it's the committed template
 .cdsapirc
 
 # ============================================================

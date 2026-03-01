@@ -173,6 +173,7 @@ def sample_posterior_predictive(
     Returns:
         (n_samples, n_new) array of wind speed samples.
     """
+    import uuid
     import pymc as pm
 
     idata = result.get("idata")
@@ -188,17 +189,24 @@ def sample_posterior_predictive(
     ])
     n_new = X_new.shape[0]
 
+    # Use unique variable names so this function can be called multiple times
+    # on the same model object (e.g. once per forecast horizon) without
+    # triggering "Variable name already exists" errors.
+    uid = uuid.uuid4().hex[:8]
+    cond_name = f"fcond_{uid}"
+    pred_name = f"y_new_{uid}"
+
     with model:
-        fcond = gp.conditional("fcond", Xnew=X_new)
+        fcond = gp.conditional(cond_name, Xnew=X_new)
         sigma = model["sigma"]
-        y_new = pm.Normal("y_new", mu=fcond, sigma=sigma, shape=(n_new,))
+        y_new = pm.Normal(pred_name, mu=fcond, sigma=sigma, shape=(n_new,))
         pp = pm.sample_posterior_predictive(
             idata,
-            var_names=["y_new"],
+            var_names=[pred_name],
             predictions=True,
             random_seed=42,
         )
-    samples = pp.posterior_predictive["y_new"].values
+    samples = pp.predictions[pred_name].values
     samples = np.reshape(samples, (-1, n_new))
     if samples.shape[0] > n_samples:
         samples = samples[:n_samples]
