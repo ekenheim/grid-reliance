@@ -39,7 +39,45 @@ The app’s ingest pipelines assume **SparkApplication** CRDs (`apiVersion: spar
 - Deploy Streamlit risk dashboard.
 - Restore worker nodes to reach full 94-core capacity.
 
-## This repo’s usage
+## ImagePullBackOff on ingest drivers (`grid-resilience-*-ingest-driver`)
 
-- **ERA5 fetch:** `data-engineering/scripts/fetch_era5_nordic.py` can target Bronze via env vars; in-cluster, set `BRONZE_ENDPOINT`, `BRONZE_ACCESS_KEY`, `BRONZE_SECRET_KEY`, `BRONZE_BUCKET` from the Ceph RGW Secret/ConfigMap (or from ExternalSecrets).
-- **Pipeline / API:** In production, point MinIO-compatible client config at Ceph RGW and the Silver/Gold bucket names above; locally keep using MinIO and `.env` as today.
+If pods `grid-resilience-entsoe-ingest-driver` and `grid-resilience-era5-ingest-driver` in `datasci` show **ImagePullBackOff**, the cluster cannot pull the container image. Typical causes and fixes:
+
+1. **Inspect the failing pod**
+   ```bash
+   kubectl describe pod -n datasci -l spark-role=driver
+   ```
+   In **Events** you’ll see the exact image name and the pull error (e.g. `unauthorized`, `not found`).
+
+2. **Private registry (e.g. ghcr.io)**
+   - If the image is from a private registry, the driver/executor pod needs **imagePullSecrets**.
+   - Create a secret in `datasci` (e.g. for ghcr.io):
+     ```bash
+     kubectl create secret docker-registry regcred -n datasci \
+       --docker-server=ghcr.io \
+       --docker-username=YOUR_GITHUB_USER \
+       --docker-password=YOUR_GITHUB_PAT_OR_TOKEN
+     ```
+   - In the **SparkApplication** spec (in home-ops or wherever these CRs live), set:
+     ```yaml
+     spec:
+       driver:
+         imagePullSecrets: ["regcred"]
+       executor:
+         imagePullSecrets: ["regcred"]
+     ```
+   - Or attach the secret to the default **service account** in `datasci` so all pods in the namespace can pull:
+     ```bash
+     kubectl patch serviceaccount default -n datasci -p '{"imagePullSecrets":[{"name":"regcred"}]}'
+     ```
+
+3. **Image name/tag wrong or image not built**
+   - This repo’s CI only builds and pushes **grid-resilience-pipeline** (Dagster). There is no separate image build for “ERA5 ingest driver” or “ENTSO-E ingest driver” in this repo.
+   - Ensure the SparkApplication manifests reference an image that actually exists and is pushed (correct repo, name, and tag). If the intent is to run a custom Spark driver image, that image must be built and pushed (e.g. via a workflow or external CI), and the CRs updated to use it.
+
+4. **Quick check**
+   - From a node or a debug pod in the cluster, run:
+     ```bash
+     crictl pull <image-from-describe>
+     ```
+     (or `docker pull` if using Docker). That will confirm whether the failure is auth, network, or missing image.
