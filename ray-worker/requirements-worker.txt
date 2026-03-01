@@ -6,11 +6,12 @@
 # class as nutpie, no zarr dependency, works on Python 3.10.
 
 # Bayesian model stack
-pymc>=5.27.1,<6
+# PyMC >=5.27.0 requires Python >=3.11 — pin to last Py3.10-compatible release.
+pymc>=5.20.0,<=5.26.0
 numpyro>=0.14.0       # JAX-backed NUTS sampler (replaces nutpie on Py3.10)
 jax>=0.4.25
 jaxlib>=0.4.25
-arviz>=0.23.4,<0.24
+arviz>=0.19.0,<0.24   # 0.19+ supports PyMC 5.x; <0.24 keeps API stable
 
 # Data handling (pandas is already in the base image; pyarrow and numpy are not)
 numpy>=1.26
