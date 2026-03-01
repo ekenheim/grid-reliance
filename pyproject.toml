@@ -1,0 +1,35 @@
+[project]
+name = "proj-grid-resilience"
+version = "0.1.0"
+description = "Pan-European Grid Resilience - Spatio-Temporal HSGP for Energy Trading"
+requires-python = ">=3.11"
+dependencies = [
+  "jax==0.4.25",
+  "jaxlib==0.4.25",
+  "numpyro>=0.14.0,<0.15",
+  "pymc>=5.27.1,<6",
+  "arviz>=0.23.4,<0.24",
+  "mlflow>=3.9.0,<4",
+  "pandas>=2.3.3,<3",
+  "numpy>=2.3.5,<3",
+  "scipy>=1.17.0,<2",
+  "boto3>=1.42.51,<2",
+  "pyarrow>=22.0.0,<23",
+  "bytewax>=0.19.0,<0.20",
+  "dagster>=1.9.0,<2",
+  "dagster-webserver>=1.9.0,<2",
+  "fastapi>=0.115.0,<1",
+  "uvicorn>=0.32.0,<1",
+  "sqlalchemy>=2.0.0,<3",
+  "psycopg2-binary>=2.9.0,<3",
+  "jupyter>=1.1.1,<2",
+  "ipywidgets>=8.1.8,<9",
+]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+
+[tool.pixi.tasks]
+notebook = "jupyter notebook pipeline/notebooks/hsgp_model_dev.ipynb"
+lab = "jupyter lab pipeline/notebooks/"

@@ -1,0 +1,29 @@
+python-dotenv>=1.0
+# Bayesian modeling
+jax==0.4.25
+jaxlib==0.4.25
+nutpie>=1.0
+numpyro>=0.14.0,<0.15
+pymc>=5.27
+arviz>=0.23
+
+# Experiment tracking
+mlflow>=3.9
+
+# Data processing
+pandas>=2.1
+numpy>=2.0
+scipy>=1.11
+
+# Dagster orchestration
+dagster>=1.9
+dagster-postgres>=0.22
+
+# Storage
+boto3>=1.34
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pyarrow>=22.0
+
+# Stream processing (Phase 2)
+bytewax>=0.19

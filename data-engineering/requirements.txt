@@ -1,0 +1,8 @@
+# ERA5 fetch (ECMWF CDS API)
+cdsapi>=0.6.0
+python-dotenv>=1.0
+xarray>=2024.1
+netCDF4>=1.6.0
+
+# Optional: upload to Bronze (S3-compatible)
+boto3>=1.34

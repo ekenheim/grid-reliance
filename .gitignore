@@ -1,0 +1,81 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.manifest
+*.spec
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy / pytype / pyre
+.mypy_cache/
+.dmypy.json
+.pytype/
+.pyre/
+
+# ============================================================
+# Data files -- these live in MinIO, not in git
+# ============================================================
+generator/csv_data/
+generator/output/
+
+# Pipeline intermediate data
+pipeline/data/
+
+# Dagster temp home
+.tmp_dagster_home*/
+
+# Model artifacts
+*.pkl
+*.parquet
+
+# ============================================================
+# Secrets and environment
+# ============================================================
+.env
+.env.*
+*.env.local
+.cdsapirc
+
+# ============================================================
+# IDE / OS
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+nohup.out
+
+# ============================================================
+# Logs
+# ============================================================
+*.log
+pip-log.txt

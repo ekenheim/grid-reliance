@@ -1,0 +1,36 @@
+# Root .dockerignore -- used by pipeline build (context: repo root).
+# Generator and API builds use subdirectory contexts with their own .dockerignore files.
+
+# Version control
+.git
+.github
+
+# Heavy directories not needed in the pipeline image
+generator/csv_data
+generator/output
+
+# IDE / OS
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in image)
+docs/
+*.md
+!pipeline/README.md
+!generator/README.md
+!api/README.md
+
+# Python caches
+__pycache__
+*.pyc
+.venv
+.pytest_cache
+.mypy_cache
+
+# Env files
+.env
+.env.*
