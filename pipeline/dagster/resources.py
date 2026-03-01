@@ -1,14 +1,50 @@
 """
-Dagster resource definitions for MinIO (S3-compatible), PostgreSQL, and Redpanda (Phase 2).
+Dagster resource definitions for Rook Ceph S3 (Silver/Gold), MinIO (local dev fallback),
+PostgreSQL (local dev fallback), and Redpanda (Phase 2).
 """
 
 import os
-import socket
 from urllib.parse import urlparse
 
 import boto3
 from botocore.config import Config
 from dagster import resource, Field, StringSource
+
+
+def _rook_s3_client(host: str, port: str, access_key: str, secret_key: str):
+    endpoint = f"http://{host}:{port}"
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+
+
+@resource
+def silver_resource(context):
+    """Rook Ceph Silver bucket (read-only: grid snapshots from Spark ERA5/ENTSO-E ingest)."""
+    client = _rook_s3_client(
+        host=os.environ["SILVER_BUCKET_HOST"],
+        port=os.environ["SILVER_BUCKET_PORT"],
+        access_key=os.environ["SILVER_AWS_ACCESS_KEY_ID"],
+        secret_key=os.environ["SILVER_AWS_SECRET_ACCESS_KEY"],
+    )
+    return {"client": client, "bucket": os.environ["SILVER_BUCKET_NAME"]}
+
+
+@resource
+def gold_resource(context):
+    """Rook Ceph Gold bucket (read-write: Dagster pipeline outputs)."""
+    client = _rook_s3_client(
+        host=os.environ["GOLD_BUCKET_HOST"],
+        port=os.environ["GOLD_BUCKET_PORT"],
+        access_key=os.environ["GOLD_AWS_ACCESS_KEY_ID"],
+        secret_key=os.environ["GOLD_AWS_SECRET_ACCESS_KEY"],
+    )
+    return {"client": client, "bucket": os.environ["GOLD_BUCKET_NAME"]}
 
 
 @resource(

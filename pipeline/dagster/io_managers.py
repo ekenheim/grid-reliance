@@ -115,6 +115,20 @@ def noop_io_manager(context):
     return NoOpIOManager()
 
 
+@io_manager(required_resource_keys={"gold"})
+def gold_io_manager(context):
+    gold = context.resources.gold
+    return MinIOParquetIOManager(gold["client"], gold["bucket"])
+
+
+@io_manager(required_resource_keys={"gold"})
+def gold_pickle_io_manager(context):
+    gold = context.resources.gold
+    return MinIOPickleIOManager(gold["client"], gold["bucket"])
+
+
+# --- Local dev / legacy fallbacks (not registered in production Definitions) ---
+
 @io_manager(required_resource_keys={"minio"})
 def minio_io_manager(context):
     minio = context.resources.minio

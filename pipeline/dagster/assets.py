@@ -20,30 +20,27 @@ TEMPORAL_SCALE_H = 168.0
 
 
 @asset(
-    description="Raw weather observations from PostgreSQL (partitioned) or MinIO.",
-    io_manager_key="minio_io_manager",
-    required_resource_keys={"minio", "postgres"},
+    description="Raw weather observations from Rook Silver bucket (written by Spark ERA5/ENTSO-E ingest).",
+    io_manager_key="gold_io_manager",
+    required_resource_keys={"silver"},
 )
 def raw_weather_obs(context) -> Output[pd.DataFrame]:
-    """Load raw weather observations. Phase 1: from PostgreSQL; Phase 2: from MinIO/Redpanda."""
-    from sqlalchemy import create_engine, text
-    conn_string = context.resources.postgres
-    engine = create_engine(conn_string)
-    with engine.connect() as conn:
-        df = pd.read_sql(text("SELECT timestamp, region_id, wind_speed_mps FROM weather_obs ORDER BY timestamp, region_id"), conn)
+    """Load raw weather observations from silver/grid_snapshots.parquet in the Silver bucket."""
+    silver = context.resources.silver
+    response = silver["client"].get_object(
+        Bucket=silver["bucket"], Key="silver/grid_snapshots.parquet"
+    )
+    df = pd.read_parquet(io.BytesIO(response["Body"].read()))
     if df.empty:
         df = pd.DataFrame(columns=["timestamp", "region_id", "wind_speed_mps"])
-    return Output(
-        df,
-        metadata={"num_rows": len(df), "source": "postgres"},
-    )
+    return Output(df, metadata={"num_rows": len(df), "source": "rook-silver"})
 
 
 @asset(
     ins={"raw_weather_obs": AssetIn("raw_weather_obs")},
     description="1-hour tumbling window snapshots: all 8 regions aggregated per timestep.",
-    io_manager_key="minio_io_manager",
-    required_resource_keys={"minio"},
+    io_manager_key="gold_io_manager",
+    required_resource_keys={"gold"},
 )
 def grid_snapshots(context, raw_weather_obs: pd.DataFrame) -> Output[pd.DataFrame]:
     """Spatial snapshots for HSGP input. One row per (timestamp, region_id); 1h resolution."""
@@ -62,11 +59,11 @@ def grid_snapshots(context, raw_weather_obs: pd.DataFrame) -> Output[pd.DataFram
 @asset(
     ins={"grid_snapshots": AssetIn("grid_snapshots")},
     description="Trained HSGP model (PyMC + Nutpie) with Matern 3/2 spatial + 5/2 temporal kernel.",
-    io_manager_key="minio_pickle_io_manager",
-    required_resource_keys={"minio"},
+    io_manager_key="gold_pickle_io_manager",
+    required_resource_keys={"gold"},
 )
 def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
-    """Train HSGP with MCMC (Nutpie). Store idata in MinIO and metadata in pickle."""
+    """Train HSGP with MCMC (Nutpie). Store idata in Rook Gold and metadata in pickle."""
     from pipeline.model.hsgp_model import train_hsgp
     from pipeline.model.diagnostics import run_diagnostics
 
@@ -84,9 +81,9 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
         buf = io.BytesIO()
         result["idata"].to_netcdf(buf)
         buf.seek(0)
-        minio = context.resources.minio
-        minio["client"].put_object(
-            Bucket=minio["bucket"],
+        gold = context.resources.gold
+        gold["client"].put_object(
+            Bucket=gold["bucket"],
             Key=HSGP_IDATA_KEY,
             Body=buf.getvalue(),
         )
@@ -115,8 +112,8 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
         "grid_snapshots": AssetIn("grid_snapshots"),
     },
     description="Tail-risk forecasts: P(shortfall > threshold) for 24/48/72h ahead.",
-    io_manager_key="minio_io_manager",
-    required_resource_keys={"minio"},
+    io_manager_key="gold_io_manager",
+    required_resource_keys={"gold"},
 )
 def tail_risk_forecasts(context, hsgp_model: dict, grid_snapshots: pd.DataFrame) -> Output[pd.DataFrame]:
     """Generate probabilistic tail-risk forecasts from HSGP posterior predictive."""
@@ -130,8 +127,8 @@ def tail_risk_forecasts(context, hsgp_model: dict, grid_snapshots: pd.DataFrame)
             pd.DataFrame(columns=["timestamp", "region_id", "horizon_h", "p_shortfall"]),
             metadata={"num_rows": 0, "source": "skip"},
         )
-    minio = context.resources.minio
-    resp = minio["client"].get_object(Bucket=minio["bucket"], Key=idata_path)
+    gold = context.resources.gold
+    resp = gold["client"].get_object(Bucket=gold["bucket"], Key=idata_path)
     idata = az.from_netcdf(io.BytesIO(resp["Body"].read()))
     meta = hsgp_model.get("metadata", {})
     zone_ids = meta.get("zone_ids", [])
@@ -176,7 +173,6 @@ def tail_risk_forecasts(context, hsgp_model: dict, grid_snapshots: pd.DataFrame)
     ins={"tail_risk_forecasts": AssetIn("tail_risk_forecasts")},
     description="Risk alerts when P(correlated drought) > threshold. Phase 2: publish to Redpanda.",
     io_manager_key="noop_io_manager",
-    required_resource_keys={"minio"},
 )
 def risk_alerts(context, tail_risk_forecasts: pd.DataFrame) -> Output[None]:
     """Log or publish alerts when p_shortfall exceeds threshold (e.g. 0.9)."""

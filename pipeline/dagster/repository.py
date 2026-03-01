@@ -19,16 +19,15 @@ from pipeline.dagster.assets import (
     risk_alerts,
 )
 from pipeline.dagster.io_managers import (
-    minio_io_manager,
-    minio_pickle_io_manager,
-    postgres_io_manager,
+    gold_io_manager,
+    gold_pickle_io_manager,
     noop_io_manager,
 )
 from pipeline.dagster.jobs import (
     grid_resilience_full_pipeline_job,
     grid_resilience_retrain_job,
 )
-from pipeline.dagster.resources import minio_resource, postgres_resource, redpanda_resource
+from pipeline.dagster.resources import silver_resource, gold_resource, redpanda_resource
 from pipeline.dagster.schedules import retrain_schedule, full_pipeline_schedule
 
 defs = Definitions(
@@ -42,12 +41,11 @@ defs = Definitions(
     jobs=[grid_resilience_full_pipeline_job, grid_resilience_retrain_job],
     schedules=[retrain_schedule, full_pipeline_schedule],
     resources={
-        "minio": minio_resource,
-        "postgres": postgres_resource,
-        "redpanda": redpanda_resource,
-        "minio_io_manager": minio_io_manager,
-        "minio_pickle_io_manager": minio_pickle_io_manager,
-        "postgres_io_manager": postgres_io_manager,
-        "noop_io_manager": noop_io_manager,
+        "silver":                silver_resource,
+        "gold":                  gold_resource,
+        "gold_io_manager":       gold_io_manager,
+        "gold_pickle_io_manager": gold_pickle_io_manager,
+        "noop_io_manager":       noop_io_manager,
+        "redpanda":              redpanda_resource,
     },
 )
