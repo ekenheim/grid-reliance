@@ -15,7 +15,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from fastapi import FastAPI
 
-from routers import forecast, correlations
+from api.routers import forecast, correlations
 
 app = FastAPI(
     title="Grid Resilience API",
