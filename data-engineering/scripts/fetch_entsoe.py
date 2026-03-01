@@ -219,20 +219,30 @@ def _parse_generation(xml_text: str, region_id: str) -> list[dict]:
 
 
 def fetch_generation(token: str, zone_id: str, eic: str, year: int, month: int) -> list[dict]:
-    """Fetch actual wind generation for one zone/month. Returns list of row dicts."""
+    """Fetch actual wind generation for one zone/month. Returns list of row dicts.
+
+    A75 / Actual Generation Per Production Type only accepts in_Domain, not out_Domain.
+    Passing out_Domain causes the API to return an empty document without an error code.
+    """
     period_start, period_end = month_window(year, month)
     params = {
         "documentType": "A75",
         "processType": "A16",
         "in_Domain": eic,
-        "out_Domain": eic,
         "periodStart": period_start,
         "periodEnd": period_end,
     }
     try:
         xml_text = _get(params, token)
         _check_error(xml_text, context=f"generation {zone_id} {year}-{month:02d}")
-        return _parse_generation(xml_text, zone_id)
+        rows = _parse_generation(xml_text, zone_id)
+        if not rows:
+            print(
+                f"  Warning: no wind TimeSeries in A75 response for {zone_id} {year}-{month:02d} "
+                f"(zone may have no wind capacity or data not yet published)",
+                file=sys.stderr,
+            )
+        return rows
     except Exception as exc:
         print(f"  Warning: generation fetch failed for {zone_id} {year}-{month:02d}: {exc}", file=sys.stderr)
         return []

@@ -179,8 +179,21 @@ def fetch_entsoe_bronze(context) -> Output[None]:
             load_rows: list[dict] = []
 
             for zone_id, eic in _entsoe.NORDIC_ZONES.items():
-                gen_rows.extend(_entsoe.fetch_generation(token, zone_id, eic, year, month))
-                load_rows.extend(_entsoe.fetch_load(token, zone_id, eic, year, month))
+                zone_gen = _entsoe.fetch_generation(token, zone_id, eic, year, month)
+                if not zone_gen:
+                    context.log.warning(
+                        "No wind generation data returned for zone %s %d-%02d "
+                        "(empty A75 response — zone may lack wind capacity or data not yet published)",
+                        zone_id, year, month,
+                    )
+                gen_rows.extend(zone_gen)
+
+                zone_load = _entsoe.fetch_load(token, zone_id, eic, year, month)
+                if not zone_load:
+                    context.log.warning(
+                        "No load data returned for zone %s %d-%02d", zone_id, year, month
+                    )
+                load_rows.extend(zone_load)
                 time.sleep(0.4)
 
             gen_name = f"actual_generation_{year}_{month:02d}.csv"
