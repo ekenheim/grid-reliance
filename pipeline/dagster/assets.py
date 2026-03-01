@@ -2,11 +2,23 @@
 Dagster asset definitions for the Grid Resilience HSGP pipeline.
 
 Asset graph:
-  raw_weather_obs -> grid_snapshots -> hsgp_model -> tail_risk_forecasts -> risk_alerts
+  fetch_era5_bronze  ──┐
+  fetch_entsoe_bronze ─┤ (Bronze bucket → Spark ingest → Silver bucket)
+                       │
+  raw_weather_obs ─────┘→ grid_snapshots -> hsgp_model -> tail_risk_forecasts -> risk_alerts
+
+The fetch_* assets are standalone (they write to Bronze; Spark ingest is a separate
+K8s job that turns Bronze into Silver). Wire them upstream of raw_weather_obs
+logically by including them in the bronze_seed job.
 """
 
 import io
 import logging
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,6 +29,207 @@ logger = logging.getLogger(__name__)
 
 HSGP_IDATA_KEY = "dagster/hsgp_model_idata.nc"
 TEMPORAL_SCALE_H = 168.0
+
+
+# ---------------------------------------------------------------------------
+# Bronze fetch assets  (Option A — fetch → Bronze, upstream of Spark ingest)
+# ---------------------------------------------------------------------------
+
+def _bronze_upload(client, bucket: str, local_path: Path, s3_key: str, log) -> bool:
+    """Upload a local file to the Bronze S3 bucket. Returns True on success."""
+    try:
+        client.upload_file(str(local_path), bucket, s3_key)
+        log.info("Uploaded %s -> s3://%s/%s", local_path.name, bucket, s3_key)
+        return True
+    except Exception as exc:
+        log.warning("Bronze upload failed for %s: %s", s3_key, exc)
+        return False
+
+
+@asset(
+    description=(
+        "Fetch ERA5 Nordic 10 m wind NetCDF files from ECMWF CDS and upload to the Bronze bucket. "
+        "Date range is controlled by ERA5_FETCH_START / ERA5_FETCH_END env vars "
+        "(default: last-calendar-year, e.g. 2024-01 / 2024-12). "
+        "Writes Bronze: era5/single-levels/era5_nordic_10m_wind_YYYY_MM.nc"
+    ),
+    group_name="bronze_fetch",
+    required_resource_keys={"bronze"},
+)
+def fetch_era5_bronze(context) -> Output[None]:
+    """Download ERA5 NetCDF from ECMWF CDS and push each monthly file to Bronze."""
+    # Resolve date range from env (or sensible default: previous calendar year)
+    from datetime import datetime, timezone
+    this_year = datetime.now(timezone.utc).year
+    default_year = this_year - 1
+    start_raw = os.environ.get("ERA5_FETCH_START", f"{default_year}-01")
+    end_raw = os.environ.get("ERA5_FETCH_END", f"{default_year}-12")
+
+    # Import the shared fetch logic from the scripts directory
+    scripts_dir = Path(__file__).resolve().parents[2] / "data-engineering" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import fetch_era5_nordic as _era5
+    except ImportError as exc:
+        raise ImportError(
+            f"Cannot import fetch_era5_nordic from {scripts_dir}. "
+            "Ensure data-engineering/scripts/ is present in the image."
+        ) from exc
+
+    rc = _era5._load_cdsapirc()
+    if rc is None:
+        raise RuntimeError(
+            "Missing CDS credentials. Set CDSAPI_URL + CDSAPI_KEY in the environment "
+            "or provide a .cdsapirc file."
+        )
+    url, key = rc
+    try:
+        import cdsapi
+    except ImportError as exc:
+        raise ImportError("Install cdsapi: pip install cdsapi") from exc
+    cds = cdsapi.Client(url=url, key=key)
+
+    bronze = context.resources.bronze
+    uploaded = skipped = failed = 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        for year, month in _era5.month_range(start_raw, end_raw):
+            fname = f"era5_nordic_10m_wind_{year}_{month:02d}.nc"
+            out_path = tmp_path / fname
+            context.log.info("Fetching ERA5 %d-%02d …", year, month)
+            success = _era5.fetch_month(cds, year, month, out_path)
+            if not success:
+                failed += 1
+                continue
+            if bronze is not None:
+                ok = _bronze_upload(
+                    bronze["client"], bronze["bucket"],
+                    out_path, f"era5/single-levels/{fname}", context.log,
+                )
+                if ok:
+                    uploaded += 1
+                else:
+                    failed += 1
+            else:
+                context.log.info("Bronze not configured — %s written locally only.", fname)
+                skipped += 1
+
+    return Output(
+        None,
+        metadata={
+            "start": start_raw,
+            "end": end_raw,
+            "uploaded": MetadataValue.int(uploaded),
+            "skipped_no_bronze": MetadataValue.int(skipped),
+            "failed": MetadataValue.int(failed),
+        },
+    )
+
+
+@asset(
+    description=(
+        "Fetch ENTSO-E actual wind generation and total load CSVs for Nordic bidding zones "
+        "and upload to the Bronze bucket. "
+        "Date range is controlled by ENTSOE_FETCH_START / ENTSOE_FETCH_END env vars "
+        "(default: last calendar year). "
+        "Writes Bronze: entsoe/generation/actual_generation_YYYY_MM.csv "
+        "and entsoe/load/actual_load_YYYY_MM.csv"
+    ),
+    group_name="bronze_fetch",
+    required_resource_keys={"bronze"},
+)
+def fetch_entsoe_bronze(context) -> Output[None]:
+    """Download ENTSO-E wind generation + load CSVs and push monthly files to Bronze."""
+    from datetime import datetime, timezone
+    this_year = datetime.now(timezone.utc).year
+    default_year = this_year - 1
+    start_raw = os.environ.get("ENTSOE_FETCH_START", f"{default_year}-01-01")
+    end_raw = os.environ.get("ENTSOE_FETCH_END", f"{default_year}-12-31")
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "data-engineering" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import fetch_entsoe as _entsoe
+    except ImportError as exc:
+        raise ImportError(
+            f"Cannot import fetch_entsoe from {scripts_dir}. "
+            "Ensure data-engineering/scripts/ is present in the image."
+        ) from exc
+
+    token = os.environ.get("ENTSOE_TOKEN", "").strip().strip('"')
+    if not token:
+        raise RuntimeError(
+            "ENTSOE_TOKEN not set. Add it to the Dagster run pod environment."
+        )
+
+    bronze = context.resources.bronze
+    gen_ok = load_ok = failed = 0
+
+    start_dt = _entsoe.parse_date(start_raw)
+    end_dt = _entsoe.parse_date(end_raw)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        for year, month in _entsoe.month_range(start_dt, end_dt):
+            context.log.info("Fetching ENTSO-E %d-%02d …", year, month)
+            gen_rows: list[dict] = []
+            load_rows: list[dict] = []
+
+            for zone_id, eic in _entsoe.NORDIC_ZONES.items():
+                gen_rows.extend(_entsoe.fetch_generation(token, zone_id, eic, year, month))
+                load_rows.extend(_entsoe.fetch_load(token, zone_id, eic, year, month))
+                time.sleep(0.4)
+
+            gen_name = f"actual_generation_{year}_{month:02d}.csv"
+            load_name = f"actual_load_{year}_{month:02d}.csv"
+
+            if gen_rows:
+                gen_path = tmp_path / gen_name
+                _entsoe._write_csv(gen_rows, gen_path)
+                if bronze is not None:
+                    ok = _bronze_upload(
+                        bronze["client"], bronze["bucket"],
+                        gen_path, f"entsoe/generation/{gen_name}", context.log,
+                    )
+                    if ok:
+                        gen_ok += 1
+                    else:
+                        failed += 1
+                else:
+                    gen_ok += 1
+            else:
+                context.log.warning("No generation data for %d-%02d", year, month)
+
+            if load_rows:
+                load_path = tmp_path / load_name
+                _entsoe._write_csv(load_rows, load_path)
+                if bronze is not None:
+                    ok = _bronze_upload(
+                        bronze["client"], bronze["bucket"],
+                        load_path, f"entsoe/load/{load_name}", context.log,
+                    )
+                    if ok:
+                        load_ok += 1
+                    else:
+                        failed += 1
+                else:
+                    load_ok += 1
+            else:
+                context.log.warning("No load data for %d-%02d", year, month)
+
+    return Output(
+        None,
+        metadata={
+            "start": start_raw,
+            "end": end_raw,
+            "generation_months_uploaded": MetadataValue.int(gen_ok),
+            "load_months_uploaded": MetadataValue.int(load_ok),
+            "failed": MetadataValue.int(failed),
+        },
+    )
 
 
 @asset(

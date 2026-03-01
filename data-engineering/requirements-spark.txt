@@ -14,3 +14,8 @@ scipy>=1.12          # xarray fallback engine and spatial utilities
 # Silver write (pandas + pyarrow; avoids hadoop-aws/s3a dependency)
 pandas>=2.2
 pyarrow>=17.0
+
+# Bronze fetch scripts (fetch_era5_nordic.py, fetch_entsoe.py)
+# Used when the data-engineering image runs as a K8s Job for bootstrap seeding.
+cdsapi>=0.6.0         # ECMWF CDS API client for ERA5 downloads
+python-dotenv>=1.0    # .env loading in fetch scripts

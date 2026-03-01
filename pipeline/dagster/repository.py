@@ -12,6 +12,8 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 from dagster import Definitions
 
 from pipeline.dagster.assets import (
+    fetch_era5_bronze,
+    fetch_entsoe_bronze,
     raw_weather_obs,
     grid_snapshots,
     hsgp_model,
@@ -24,23 +26,27 @@ from pipeline.dagster.io_managers import (
     noop_io_manager,
 )
 from pipeline.dagster.jobs import (
+    grid_resilience_bronze_seed_job,
     grid_resilience_full_pipeline_job,
     grid_resilience_retrain_job,
 )
-from pipeline.dagster.resources import silver_resource, gold_resource, postgres_resource, redpanda_resource
+from pipeline.dagster.resources import bronze_resource, silver_resource, gold_resource, postgres_resource, redpanda_resource
 from pipeline.dagster.schedules import retrain_schedule, full_pipeline_schedule
 
 defs = Definitions(
     assets=[
+        fetch_era5_bronze,
+        fetch_entsoe_bronze,
         raw_weather_obs,
         grid_snapshots,
         hsgp_model,
         tail_risk_forecasts,
         risk_alerts,
     ],
-    jobs=[grid_resilience_full_pipeline_job, grid_resilience_retrain_job],
+    jobs=[grid_resilience_bronze_seed_job, grid_resilience_full_pipeline_job, grid_resilience_retrain_job],
     schedules=[retrain_schedule, full_pipeline_schedule],
     resources={
+        "bronze":                bronze_resource,
         "silver":                silver_resource,
         "gold":                  gold_resource,
         "postgres":              postgres_resource,

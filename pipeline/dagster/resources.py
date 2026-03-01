@@ -46,6 +46,28 @@ def silver_resource(context):
 
 
 @resource
+def bronze_resource(context):
+    """Rook Ceph Bronze bucket (write: ERA5 NetCDF and ENTSO-E CSV files from fetch assets).
+
+    Returns None when Bronze env vars are absent so that fetch assets can skip
+    upload gracefully during local development.
+    """
+    host = os.environ.get("BRONZE_BUCKET_HOST", "").strip()
+    port = os.environ.get("BRONZE_BUCKET_PORT", "").strip()
+    access_key = os.environ.get("BRONZE_AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.environ.get("BRONZE_AWS_SECRET_ACCESS_KEY", "").strip()
+    bucket = os.environ.get("BRONZE_BUCKET_NAME", "").strip()
+    if not all([host, port, access_key, secret_key, bucket]):
+        context.log.info(
+            "Bronze bucket not configured (BRONZE_BUCKET_HOST/PORT/CREDS absent) — "
+            "fetch assets will write locally only."
+        )
+        return None
+    client = _rook_s3_client(host=host, port=port, access_key=access_key, secret_key=secret_key)
+    return {"client": client, "bucket": bucket}
+
+
+@resource
 def gold_resource(context):
     """Rook Ceph Gold bucket (read-write: Dagster pipeline outputs)."""
     client = _rook_s3_client(

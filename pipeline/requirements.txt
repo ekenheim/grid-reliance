@@ -25,5 +25,8 @@ sqlalchemy>=2.0
 psycopg2-binary>=2.9
 pyarrow>=22.0
 
+# Bronze fetch (Dagster fetch assets)
+cdsapi>=0.6.0         # ECMWF CDS API client (ERA5 downloads)
+
 # Stream processing (Phase 2)
 bytewax>=0.19
