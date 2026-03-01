@@ -155,7 +155,11 @@ def _sample_one_chain(
         import nutpie  # noqa: F401
         nuts_sampler = "nutpie"
     except ImportError:
-        nuts_sampler = "pymc"
+        try:
+            import numpyro  # noqa: F401
+            nuts_sampler = "numpyro"
+        except ImportError:
+            nuts_sampler = "pymc"
 
     with model:
         idata = pm.sample(

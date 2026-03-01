@@ -20,17 +20,17 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 
 COPY ray-worker/requirements-worker.txt /tmp/requirements-worker.txt
 
-# Install into the conda base env that Ray uses for task execution.
-# zarr must be installed before nutpie because nutpie declares it as a dependency.
-RUN pip install --no-cache-dir \
-        "zarr>=3.1.0" \
-    && pip install --no-cache-dir -r /tmp/requirements-worker.txt
+# nutpie >=0.16 requires zarr >=3.1.0 which requires Python >=3.11.
+# This base image ships Python 3.10, so nutpie cannot be installed here.
+# numpyro (JAX-backed) is used instead — equally fast, no zarr dependency.
+RUN pip install --no-cache-dir -r /tmp/requirements-worker.txt
 
 # Copy pipeline model code so workers can import it directly
 # (avoids a second pip install of the pipeline package at runtime).
 COPY pipeline/__init__.py      /home/ray/pipeline/
 COPY pipeline/model/           /home/ray/pipeline/model/
 
-ENV PYTHONPATH=/home/ray:${PYTHONPATH}
+# Set PYTHONPATH without extending an undefined variable (avoids BuildKit warning)
+ENV PYTHONPATH=/home/ray
 
 USER ray
