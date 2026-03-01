@@ -35,8 +35,20 @@ TEMPORAL_SCALE_H = 168.0
 # Bronze fetch assets  (Option A — fetch → Bronze, upstream of Spark ingest)
 # ---------------------------------------------------------------------------
 
+def _s3_key_exists(client, bucket: str, key: str) -> bool:
+    """Return True if the S3 key already exists (HEAD request, no data transfer)."""
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
 def _bronze_upload(client, bucket: str, local_path: Path, s3_key: str, log) -> bool:
-    """Upload a local file to the Bronze S3 bucket. Returns True on success."""
+    """Upload a local file to the Bronze S3 bucket, skipping if the key already exists."""
+    if _s3_key_exists(client, bucket, s3_key):
+        log.info("Skip %s — already in s3://%s/%s", local_path.name, bucket, s3_key)
+        return True
     try:
         client.upload_file(str(local_path), bucket, s3_key)
         log.info("Uploaded %s -> s3://%s/%s", local_path.name, bucket, s3_key)
@@ -178,22 +190,39 @@ def fetch_entsoe_bronze(context) -> Output[None]:
             gen_rows: list[dict] = []
             load_rows: list[dict] = []
 
-            for zone_id, eic in _entsoe.NORDIC_ZONES.items():
-                zone_gen = _entsoe.fetch_generation(token, zone_id, eic, year, month)
-                if not zone_gen:
-                    context.log.warning(
-                        "No wind generation data returned for zone %s %d-%02d "
-                        "(empty A75 response — zone may lack wind capacity or data not yet published)",
-                        zone_id, year, month,
+            # Generation uses control-area EICs (SE/NO at system level).
+            for zone_id, eic in _entsoe.NORDIC_GENERATION_ZONES.items():
+                try:
+                    zone_gen = _entsoe.fetch_generation(token, zone_id, eic, year, month)
+                    if not zone_gen:
+                        context.log.warning(
+                            "A75 returned valid document but zero wind TimeSeries for "
+                            "area %s %d-%02d (no B18/B19 data at this granularity)",
+                            zone_id, year, month,
+                        )
+                    gen_rows.extend(zone_gen)
+                except Exception as exc:
+                    context.log.error(
+                        "generation fetch FAILED for area %s %d-%02d: %s",
+                        zone_id, year, month, exc,
                     )
-                gen_rows.extend(zone_gen)
+                time.sleep(0.4)
 
-                zone_load = _entsoe.fetch_load(token, zone_id, eic, year, month)
-                if not zone_load:
-                    context.log.warning(
-                        "No load data returned for zone %s %d-%02d", zone_id, year, month
+            # Load uses bidding-zone EICs — published per zone for all Nordic areas.
+            for zone_id, eic in _entsoe.NORDIC_ZONES.items():
+                try:
+                    zone_load = _entsoe.fetch_load(token, zone_id, eic, year, month)
+                    if not zone_load:
+                        context.log.warning(
+                            "A65 returned valid document but zero rows for zone %s %d-%02d",
+                            zone_id, year, month,
+                        )
+                    load_rows.extend(zone_load)
+                except Exception as exc:
+                    context.log.error(
+                        "load fetch FAILED for zone %s %d-%02d: %s",
+                        zone_id, year, month, exc,
                     )
-                load_rows.extend(zone_load)
                 time.sleep(0.4)
 
             gen_name = f"actual_generation_{year}_{month:02d}.csv"
@@ -308,6 +337,17 @@ def grid_snapshots(context, raw_weather_obs: pd.DataFrame) -> Output[pd.DataFram
     )
 
 
+_HSGP_HASH_KEY = "dagster/hsgp_model_data_hash.txt"
+
+
+def _grid_snapshots_hash(df: pd.DataFrame) -> str:
+    """Stable MD5 of the grid_snapshots DataFrame content (row-order invariant)."""
+    import hashlib
+    sorted_df = df.sort_values(["timestamp", "region_id"]).reset_index(drop=True)
+    raw = pd.util.hash_pandas_object(sorted_df, index=False).values.tobytes()
+    return hashlib.md5(raw, usedforsecurity=False).hexdigest()
+
+
 @asset(
     ins={"grid_snapshots": AssetIn("grid_snapshots")},
     description="Trained HSGP model (PyMC + Nutpie) with Matern 3/2 spatial + 5/2 temporal kernel.",
@@ -315,9 +355,44 @@ def grid_snapshots(context, raw_weather_obs: pd.DataFrame) -> Output[pd.DataFram
     required_resource_keys={"gold"},
 )
 def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
-    """Train HSGP with MCMC (Nutpie). Store idata in Rook Gold and metadata in pickle."""
+    """Train HSGP with MCMC (Nutpie). Store idata in Rook Gold and metadata in pickle.
+
+    Skips retraining when grid_snapshots content hasn't changed since the last
+    successful run; loads and returns the existing model metadata from Gold instead.
+    """
     from pipeline.model.hsgp_model import train_hsgp
     from pipeline.model.diagnostics import run_diagnostics
+
+    gold = context.resources.gold
+    new_hash = _grid_snapshots_hash(grid_snapshots)
+
+    # Check whether the data we'd train on is identical to the last training run.
+    try:
+        resp = gold["client"].get_object(Bucket=gold["bucket"], Key=_HSGP_HASH_KEY)
+        stored_hash = resp["Body"].read().decode().strip()
+        if stored_hash == new_hash:
+            context.log.info(
+                "grid_snapshots unchanged (hash %s…) — skipping MCMC retrain, "
+                "loading existing model from Gold.",
+                new_hash[:8],
+            )
+            existing_resp = gold["client"].get_object(
+                Bucket=gold["bucket"], Key=HSGP_IDATA_KEY
+            )
+            # Verify the idata file actually exists before declaring skip valid
+            if existing_resp["ContentLength"] > 0:
+                return Output(
+                    {
+                        "idata_path": HSGP_IDATA_KEY,
+                        "metadata": {},
+                        "spatial_correlation": None,
+                        "m_spatial": 5,
+                        "m_temporal": 10,
+                    },
+                    metadata={"model_type": "HSGP", "status": "skipped (data unchanged)"},
+                )
+    except Exception:
+        pass  # No stored hash, idata missing, or any other error — retrain.
 
     result = train_hsgp(
         grid_snapshots,
@@ -333,7 +408,6 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
         buf = io.BytesIO()
         result["idata"].to_netcdf(buf)
         buf.seek(0)
-        gold = context.resources.gold
         gold["client"].put_object(
             Bucket=gold["bucket"],
             Key=HSGP_IDATA_KEY,
@@ -341,7 +415,16 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
         )
         result["idata_path"] = HSGP_IDATA_KEY
         diagnostics = run_diagnostics(None, idata=result["idata"])
-        metadata_extra = {"n_divergences": diagnostics.get("n_divergences"), "max_r_hat": diagnostics.get("max_r_hat")}
+        metadata_extra = {
+            "n_divergences": diagnostics.get("n_divergences"),
+            "max_r_hat": diagnostics.get("max_r_hat"),
+        }
+        # Persist the data hash so the next run can skip retraining.
+        gold["client"].put_object(
+            Bucket=gold["bucket"],
+            Key=_HSGP_HASH_KEY,
+            Body=new_hash.encode(),
+        )
     else:
         result["idata_path"] = None
         metadata_extra = {}

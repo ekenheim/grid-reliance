@@ -56,8 +56,8 @@ if _env.exists():
 
 ENTSOE_BASE = "https://web-api.tp.entsoe.eu/api"
 
-# Nordic bidding zone EIC area codes for the ENTSO-E Transparency Platform.
-# Keys are our internal region_id values (matching spark_era5_ingest zone assignments).
+# Nordic bidding zone EIC codes — used for LOAD (A65) queries.
+# Load data IS published at bidding-zone granularity for all Nordic zones.
 NORDIC_ZONES: dict[str, str] = {
     "SE1": "10Y1001A1001A44P",
     "SE2": "10Y1001A1001A45N",
@@ -70,7 +70,22 @@ NORDIC_ZONES: dict[str, str] = {
     "FI":  "10YFI-1--------U",
 }
 
-# PSR types for wind generation (ENTSO-E production type codes)
+# GENERATION (A75) zones use CONTROL-AREA EICs.
+# Nordic TSOs publish Actual Generation Per Production Type only at country/system level:
+#   SVK (Sweden): 10YSE-1--------K  — not per SE1-SE4
+#   Statnett (Norway): 10YNO-0--------C — not per NO1-NO2
+# Denmark and Finland happen to have bidding-zone level generation data.
+NORDIC_GENERATION_ZONES: dict[str, str] = {
+    "SE":  "10YSE-1--------K",   # Svenska kraftnät — whole Swedish system
+    "NO":  "10YNO-0--------C",   # Statnett — whole Norwegian system
+    "DK1": "10YDK-1--------W",   # West Denmark bidding zone
+    "DK2": "10YDK-2--------M",   # East Denmark bidding zone
+    "FI":  "10YFI-1--------U",   # Fingrid — Finland
+}
+
+# PSR types for wind generation (ENTSO-E production type codes).
+# These become the `variable` column value in the output CSV so that
+# entsoe_ingest.py can filter for B18 / B19 directly.
 WIND_PSR_TYPES = {
     "B18": "wind_offshore",
     "B19": "wind_onshore",
@@ -101,12 +116,19 @@ def month_range(start: datetime, end: datetime):
 
 
 def month_window(year: int, month: int) -> tuple[str, str]:
-    """Return (period_start, period_end) strings in ENTSO-E format YYYYMMDDhhmm."""
-    import calendar
-    last_day = calendar.monthrange(year, month)[1]
+    """Return (period_start, period_end) in ENTSO-E format YYYYMMDDhhmm.
+
+    ENTSO-E treats periodEnd as exclusive — the correct upper bound for a
+    calendar month is the first moment of the following month (00:00 on day 1).
+    Using the last day of the current month at 23:00 misses the final hour.
+    """
+    next_month = month + 1
+    next_year = year
+    if next_month > 12:
+        next_month, next_year = 1, year + 1
     return (
         f"{year}{month:02d}01" "0000",
-        f"{year}{month:02d}{last_day:02d}" "2300",
+        f"{next_year}{next_month:02d}01" "0000",
     )
 
 
@@ -212,17 +234,28 @@ def _parse_generation(xml_text: str, region_id: str) -> list[dict]:
             rows.append({
                 "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "region_id": region_id,
-                "variable": "wind_gen_mwh",
+                # Use the PSR type code (B18/B19) as variable so that
+                # entsoe_ingest.py can filter directly by production type.
+                "variable": psr_code,
                 "value_mwh": quantity,
             })
     return rows
 
 
-def fetch_generation(token: str, zone_id: str, eic: str, year: int, month: int) -> list[dict]:
-    """Fetch actual wind generation for one zone/month. Returns list of row dicts.
+class EntsoeFetchError(Exception):
+    """Raised by fetch_generation / fetch_load with a human-readable reason."""
 
-    A75 / Actual Generation Per Production Type only accepts in_Domain, not out_Domain.
-    Passing out_Domain causes the API to return an empty document without an error code.
+
+def fetch_generation(token: str, zone_id: str, eic: str, year: int, month: int) -> list[dict]:
+    """Fetch actual wind generation for one zone/month.
+
+    Raises EntsoeFetchError with the API reason string when the platform
+    returns an Acknowledgement_MarketDocument (e.g. "No matching data found").
+    Returns an empty list only when the document is valid but contains zero
+    wind (B18/B19) TimeSeries — which means data genuinely doesn't exist for
+    that area at that granularity.
+
+    A75 / Actual Generation Per Production Type only accepts in_Domain.
     """
     period_start, period_end = month_window(year, month)
     params = {
@@ -232,20 +265,10 @@ def fetch_generation(token: str, zone_id: str, eic: str, year: int, month: int) 
         "periodStart": period_start,
         "periodEnd": period_end,
     }
-    try:
-        xml_text = _get(params, token)
-        _check_error(xml_text, context=f"generation {zone_id} {year}-{month:02d}")
-        rows = _parse_generation(xml_text, zone_id)
-        if not rows:
-            print(
-                f"  Warning: no wind TimeSeries in A75 response for {zone_id} {year}-{month:02d} "
-                f"(zone may have no wind capacity or data not yet published)",
-                file=sys.stderr,
-            )
-        return rows
-    except Exception as exc:
-        print(f"  Warning: generation fetch failed for {zone_id} {year}-{month:02d}: {exc}", file=sys.stderr)
-        return []
+    xml_text = _get(params, token)
+    # _check_error raises RuntimeError on Acknowledgement_MarketDocument
+    _check_error(xml_text, context=f"generation {zone_id} {year}-{month:02d}")
+    return _parse_generation(xml_text, zone_id)
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +338,11 @@ def _parse_load(xml_text: str, region_id: str) -> list[dict]:
 
 
 def fetch_load(token: str, zone_id: str, eic: str, year: int, month: int) -> list[dict]:
-    """Fetch actual total load for one zone/month."""
+    """Fetch actual total load for one zone/month.
+
+    Raises EntsoeFetchError on API-level errors. Returns [] only when the
+    document is valid but genuinely contains no data.
+    """
     period_start, period_end = month_window(year, month)
     params = {
         "documentType": "A65",
@@ -324,13 +351,9 @@ def fetch_load(token: str, zone_id: str, eic: str, year: int, month: int) -> lis
         "periodStart": period_start,
         "periodEnd": period_end,
     }
-    try:
-        xml_text = _get(params, token)
-        _check_error(xml_text, context=f"load {zone_id} {year}-{month:02d}")
-        return _parse_load(xml_text, zone_id)
-    except Exception as exc:
-        print(f"  Warning: load fetch failed for {zone_id} {year}-{month:02d}: {exc}", file=sys.stderr)
-        return []
+    xml_text = _get(params, token)
+    _check_error(xml_text, context=f"load {zone_id} {year}-{month:02d}")
+    return _parse_load(xml_text, zone_id)
 
 
 # ---------------------------------------------------------------------------
@@ -402,11 +425,21 @@ def main() -> int:
         gen_rows: list[dict] = []
         load_rows: list[dict] = []
 
+        # Generation: control-area EICs (SE, NO) — Nordic TSOs only publish at system level.
+        for zone_id, eic in NORDIC_GENERATION_ZONES.items():
+            try:
+                gen_rows.extend(fetch_generation(token, zone_id, eic, year, month))
+            except Exception as exc:
+                print(f"  [generation {zone_id}] {exc}", file=sys.stderr)
+            time.sleep(0.4)
+
+        # Load: bidding-zone EICs — published per zone for all Nordic areas.
         for zone_id, eic in NORDIC_ZONES.items():
-            gen_rows.extend(fetch_generation(token, zone_id, eic, year, month))
-            load_rows.extend(fetch_load(token, zone_id, eic, year, month))
-            # Brief pause to stay within ENTSO-E rate limits
-            time.sleep(0.5)
+            try:
+                load_rows.extend(fetch_load(token, zone_id, eic, year, month))
+            except Exception as exc:
+                print(f"  [load {zone_id}] {exc}", file=sys.stderr)
+            time.sleep(0.4)
 
         gen_name = f"actual_generation_{year}_{month:02d}.csv"
         load_name = f"actual_load_{year}_{month:02d}.csv"
@@ -420,7 +453,7 @@ def main() -> int:
             if args.upload_bronze:
                 upload_to_bronze(gen_path, f"entsoe/generation/{gen_name}")
         else:
-            print(f"  No generation data for {year}-{month:02d} (all zones)")
+            print(f"  No generation data for {year}-{month:02d} (all areas — check ENTSOE_TOKEN and area EICs)")
 
         if load_rows:
             _write_csv(load_rows, load_path)

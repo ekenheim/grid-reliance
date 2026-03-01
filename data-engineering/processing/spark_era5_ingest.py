@@ -220,6 +220,33 @@ def main() -> int:
         return 1
     print(f"Found {len(nc_keys)} ERA5 NetCDF file(s) in Bronze.", file=sys.stderr)
 
+    # Freshness check: skip if Silver already reflects the latest Bronze data.
+    # Compare the Silver parquet LastModified against the newest Bronze .nc file.
+    silver_client = _s3_client(silver_endpoint, silver_access, silver_secret)
+    try:
+        silver_head = silver_client.head_object(Bucket=silver_bucket, Key=silver_key)
+        silver_mtime = silver_head["LastModified"]
+        newest_bronze_mtime = max(
+            bronze_client.head_object(Bucket=bronze_bucket, Key=k)["LastModified"]
+            for k in nc_keys
+        )
+        if silver_mtime >= newest_bronze_mtime:
+            print(
+                f"Silver grid_snapshots.parquet is up-to-date "
+                f"(Silver: {silver_mtime.isoformat()}, newest Bronze: {newest_bronze_mtime.isoformat()}). "
+                "Nothing to do.",
+                file=sys.stderr,
+            )
+            return 0
+        print(
+            f"New Bronze data detected (newest Bronze: {newest_bronze_mtime.isoformat()}, "
+            f"Silver: {silver_mtime.isoformat()}). Re-ingesting.",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        # Silver doesn't exist yet or metadata unavailable — fall through to full ingest.
+        print(f"Freshness check skipped ({exc}); proceeding with full ingest.", file=sys.stderr)
+
     # Spark session — no S3A needed (reads via boto3 in UDFs, writes via boto3 at end)
     spark = (
         SparkSession.builder

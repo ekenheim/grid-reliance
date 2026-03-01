@@ -2,6 +2,7 @@
 Dagster IO managers for MinIO (Parquet, Pickle) and PostgreSQL (tables).
 """
 
+import hashlib
 import io
 import logging
 import pickle
@@ -12,9 +13,30 @@ from sqlalchemy import create_engine
 
 logger = logging.getLogger(__name__)
 
+_HASH_META_KEY = "content-md5"
+
+
+def _md5(data: bytes) -> str:
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+
+
+def _existing_hash(client, bucket: str, key: str) -> str | None:
+    """Return the stored content-md5 metadata from an existing S3 object, or None."""
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+        return head.get("Metadata", {}).get(_HASH_META_KEY)
+    except Exception:
+        return None
+
 
 class MinIOParquetIOManager(IOManager):
-    """Read/write Pandas DataFrames as Parquet files in MinIO."""
+    """Read/write Pandas DataFrames as Parquet files in MinIO/Rook.
+
+    Idempotent: computes an MD5 of the serialised bytes before writing and
+    stores it as S3 object metadata.  If the stored hash matches the new
+    payload the write is skipped entirely, preventing redundant re-writes on
+    repeated pipeline runs with unchanged data.
+    """
 
     def __init__(self, s3_client, bucket: str, prefix: str = "dagster"):
         self._client = s3_client
@@ -31,16 +53,30 @@ class MinIOParquetIOManager(IOManager):
         key = self._key(context)
         buf = io.BytesIO()
         obj.to_parquet(buf, index=False)
-        buf.seek(0)
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=buf)
-        context.log.info(f"Wrote {len(obj)} rows to s3://{self._bucket}/{key}")
+        new_bytes = buf.getvalue()
+        new_hash = _md5(new_bytes)
+
+        if _existing_hash(self._client, self._bucket, key) == new_hash:
+            context.log.info(
+                "Skip write to s3://%s/%s — content unchanged (md5 %s…)",
+                self._bucket, key, new_hash[:8],
+            )
+            return
+
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=new_bytes,
+            Metadata={_HASH_META_KEY: new_hash},
+        )
+        context.log.info("Wrote %d rows to s3://%s/%s", len(obj), self._bucket, key)
 
     def load_input(self, context: InputContext):
         key = self._key(context)
         response = self._client.get_object(Bucket=self._bucket, Key=key)
         buf = io.BytesIO(response["Body"].read())
         df = pd.read_parquet(buf)
-        context.log.info(f"Read {len(df)} rows from s3://{self._bucket}/{key}")
+        context.log.info("Read %d rows from s3://%s/%s", len(df), self._bucket, key)
         return df
 
 
@@ -71,7 +107,10 @@ class PostgresIOManager(IOManager):
 
 
 class MinIOPickleIOManager(IOManager):
-    """Read/write arbitrary Python objects as pickle files in MinIO."""
+    """Read/write arbitrary Python objects as pickle files in MinIO/Rook.
+
+    Same content-hash idempotency as MinIOParquetIOManager.
+    """
 
     def __init__(self, s3_client, bucket: str, prefix: str = "dagster"):
         self._client = s3_client
@@ -86,17 +125,29 @@ class MinIOPickleIOManager(IOManager):
         if obj is None:
             return
         key = self._key(context)
-        buf = io.BytesIO()
-        pickle.dump(obj, buf)
-        buf.seek(0)
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=buf)
-        context.log.info(f"Pickled output to s3://{self._bucket}/{key}")
+        new_bytes = pickle.dumps(obj)
+        new_hash = _md5(new_bytes)
+
+        if _existing_hash(self._client, self._bucket, key) == new_hash:
+            context.log.info(
+                "Skip write to s3://%s/%s — content unchanged (md5 %s…)",
+                self._bucket, key, new_hash[:8],
+            )
+            return
+
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=new_bytes,
+            Metadata={_HASH_META_KEY: new_hash},
+        )
+        context.log.info("Pickled output to s3://%s/%s", self._bucket, key)
 
     def load_input(self, context: InputContext):
         key = self._key(context)
         response = self._client.get_object(Bucket=self._bucket, Key=key)
         obj = pickle.loads(response["Body"].read())
-        context.log.info(f"Loaded pickle from s3://{self._bucket}/{key}")
+        context.log.info("Loaded pickle from s3://%s/%s", self._bucket, key)
         return obj
 
 

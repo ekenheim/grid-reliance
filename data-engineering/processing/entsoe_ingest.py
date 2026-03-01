@@ -41,19 +41,20 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-# ENTSO-E bidding zone codes that map to our Nordic zone IDs
+# ENTSO-E zone/area codes → our internal region_id.
+# Generation (A75) is published at CONTROL-AREA level for SE and NO, so
+# fetch_entsoe.py writes region_id "SE" / "NO" for those rows.
+# Load (A65) is published at bidding-zone level (SE1-SE4, NO1-NO2 …).
 ZONE_MAP: dict[str, str] = {
-    # ENTSO-E EIC code → our region_id
-    "SE1": "SE1",
-    "SE2": "SE2",
-    "SE3": "SE3",
-    "SE4": "SE4",
-    "NO1": "NO1",
-    "NO2": "NO2",
-    "DK1": "DK1",
-    "DK2": "DK2",
+    # Bidding-zone short codes (load rows)
+    "SE1": "SE1", "SE2": "SE2", "SE3": "SE3", "SE4": "SE4",
+    "NO1": "NO1", "NO2": "NO2",
+    "DK1": "DK1", "DK2": "DK2",
     "FI":  "FI",
-    # Common alternative codes returned by the API
+    # Control-area short codes (generation rows — SE and NO at system level)
+    "SE":  "SE",
+    "NO":  "NO",
+    # Full EIC codes as fallback (API sometimes embeds them in the response)
     "10Y1001A1001A44P": "SE1",
     "10Y1001A1001A45N": "SE2",
     "10Y1001A1001A46L": "SE3",
@@ -63,12 +64,14 @@ ZONE_MAP: dict[str, str] = {
     "10YDK-1--------W": "DK1",
     "10YDK-2--------M": "DK2",
     "10YFI-1--------U": "FI",
+    "10YSE-1--------K": "SE",   # Sweden system (generation control area)
+    "10YNO-0--------C": "NO",   # Norway system (generation control area)
 }
 
-# ENTSO-E production type codes for wind
+# ENTSO-E production type codes written as the `variable` column by fetch_entsoe.py
 WIND_ONSHORE_CODE  = "B19"   # Wind Onshore
 WIND_OFFSHORE_CODE = "B18"   # Wind Offshore
-LOAD_VARIABLE      = "actual_load"
+LOAD_VARIABLE      = "load_mwh"   # written by fetch_entsoe._parse_load
 
 SILVER_SCHEMA = StructType([
     StructField("timestamp",          TimestampType(), True),
@@ -225,6 +228,32 @@ def main() -> int:
         return 1
 
     print(f"Found {len(gen_keys)} generation + {len(load_keys)} load CSV file(s).", file=sys.stderr)
+
+    # Freshness check: skip if Silver already reflects all Bronze CSV files.
+    silver_client = _s3_client(silver_endpoint, silver_access, silver_secret)
+    try:
+        silver_head = silver_client.head_object(Bucket=silver_bucket, Key=silver_key)
+        silver_mtime = silver_head["LastModified"]
+        all_bronze_keys = gen_keys + load_keys
+        newest_bronze_mtime = max(
+            bronze_client.head_object(Bucket=bronze_bucket, Key=k)["LastModified"]
+            for k in all_bronze_keys
+        )
+        if silver_mtime >= newest_bronze_mtime:
+            print(
+                f"Silver entsoe_snapshots.parquet is up-to-date "
+                f"(Silver: {silver_mtime.isoformat()}, newest Bronze: {newest_bronze_mtime.isoformat()}). "
+                "Nothing to do.",
+                file=sys.stderr,
+            )
+            return 0
+        print(
+            f"New Bronze data detected (newest Bronze: {newest_bronze_mtime.isoformat()}, "
+            f"Silver: {silver_mtime.isoformat()}). Re-ingesting.",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        print(f"Freshness check skipped ({exc}); proceeding with full ingest.", file=sys.stderr)
 
     spark = (
         SparkSession.builder
