@@ -7,6 +7,8 @@
 
 # Bayesian model stack
 # PyMC >=5.27.0 requires Python >=3.11 — pin to last Py3.10-compatible release.
+# Other components (pipeline, inference) use pymc>=5.27.1,<6 on Python 3.11+.
+# This version split is intentional; numpyro NUTS provides equivalent inference.
 pymc>=5.20.0,<=5.26.0
 numpyro>=0.14.0       # JAX-backed NUTS sampler (replaces nutpie on Py3.10)
 jax>=0.4.25

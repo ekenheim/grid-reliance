@@ -1,17 +1,16 @@
-name: Build Pipeline Image
+name: Build Generator Image
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
     paths:
-      - "pipeline/**"
-      - "data-engineering/scripts/**"
-      - ".github/workflows/pipeline.yml"
+      - "generator/**"
+      - ".github/workflows/generator.yml"
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/grid-resilience-pipeline
+  IMAGE_NAME: ${{ github.repository_owner }}/grid-resilience-generator
 
 jobs:
   build-and-push:
@@ -57,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./pipeline/Dockerfile
+          file: ./generator/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

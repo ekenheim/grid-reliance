@@ -10,6 +10,7 @@ Output: PostgreSQL partitioned tables (weather_obs, grid_demand, spot_prices).
 
 from __future__ import annotations
 
+import math
 import os
 import random
 from datetime import datetime, timedelta
@@ -99,7 +100,7 @@ def build_matern_covariance_matrix(
         from scipy.special import kv
         r = np.maximum(r, 1e-10)
         sqrt_nu = np.sqrt(2 * nu) * r
-        K = sigma2 * (2 ** (1 - nu) / __import__("math").gamma(nu)) * (sqrt_nu ** nu) * kv(nu, sqrt_nu)
+        K = sigma2 * (2 ** (1 - nu) / math.gamma(nu)) * (sqrt_nu ** nu) * kv(nu, sqrt_nu)
     np.fill_diagonal(K, sigma2)
     return K.astype(np.float64)
 

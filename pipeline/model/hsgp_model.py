@@ -126,22 +126,38 @@ def train_hsgp(
             chains=chains,
             nuts_sampler=nuts_sampler,
             random_seed=random_seed,
-            idata_kwargs={"log_likelihood": True},
         )
+
+    # Save immediately after sampling to prevent data loss from late crashes
+    if idata_path:
+        idata.to_netcdf(idata_path)
+        logger.info("Saved idata to %s", idata_path)
+
+    # nutpie silently ignores idata_kwargs={"log_likelihood": True},
+    # so always compute log_likelihood explicitly after sampling.
+    try:
+        pm.compute_log_likelihood(idata, model=model)
         if idata_path:
-            idata.to_netcdf(idata_path)
-            logger.info("Saved idata to %s", idata_path)
-        try:
-            pm.compute_log_likelihood(idata, model=model)
-        except Exception as e:
-            logger.debug("log_likelihood computation skipped: %s", e)
+            idata.to_netcdf(idata_path)  # update with log_likelihood
+    except Exception as e:
+        logger.debug("log_likelihood computation skipped: %s", e)
+
+    # Phase 1 diagnostics: divergences + r_hat + ESS (required before interpreting results)
+    if hasattr(idata, "sample_stats") and "diverging" in idata.sample_stats:
+        n_div = int(idata.sample_stats["diverging"].sum().item())
+        logger.info("Divergences: %d", n_div)
+        if n_div > 0:
+            logger.warning(
+                "%d divergences detected — consider non-centered parameterization "
+                "or increasing target_accept", n_div
+            )
 
     spatial_correlation = None
     try:
         ell_s = idata.posterior["ell_spatial"].values.flatten()
         ell_t = idata.posterior["ell_temporal"].values.flatten()
-        eta = idata.posterior["eta"].values.flatten()
-        spatial_correlation = np.corrcoef(np.column_stack([ell_s, ell_t, eta])) if len(ell_s) > 1 else None
+        eta_post = idata.posterior["eta"].values.flatten()
+        spatial_correlation = np.corrcoef(np.column_stack([ell_s, ell_t, eta_post])) if len(ell_s) > 1 else None
     except Exception as e:
         logger.debug("Could not derive spatial correlation: %s", e)
 

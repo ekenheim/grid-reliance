@@ -78,14 +78,24 @@ def bronze_resource(context):
 
 @resource
 def gold_resource(context):
-    """Rook Ceph Gold bucket (read-write: Dagster pipeline outputs)."""
-    client = _rook_s3_client(
-        host=os.environ["GOLD_BUCKET_HOST"],
-        port=os.environ["GOLD_BUCKET_PORT"],
-        access_key=os.environ["GOLD_AWS_ACCESS_KEY_ID"],
-        secret_key=os.environ["GOLD_AWS_SECRET_ACCESS_KEY"],
-    )
-    return {"client": client, "bucket": os.environ["GOLD_BUCKET_NAME"]}
+    """Rook Ceph Gold bucket (read-write: Dagster pipeline outputs).
+
+    Returns None when Gold env vars are not set so that the pipeline can
+    start in local-dev mode without crashing on startup.
+    """
+    host = os.environ.get("GOLD_BUCKET_HOST", "").strip()
+    port = os.environ.get("GOLD_BUCKET_PORT", "").strip()
+    access_key = os.environ.get("GOLD_AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.environ.get("GOLD_AWS_SECRET_ACCESS_KEY", "").strip()
+    bucket = os.environ.get("GOLD_BUCKET_NAME", "").strip()
+    if not all([host, port, access_key, secret_key, bucket]):
+        context.log.warning(
+            "Gold bucket not configured (GOLD_BUCKET_HOST/PORT/CREDS absent) — "
+            "assets requiring Gold will fail at runtime."
+        )
+        return None
+    client = _rook_s3_client(host=host, port=port, access_key=access_key, secret_key=secret_key)
+    return {"client": client, "bucket": bucket}
 
 
 @resource(
