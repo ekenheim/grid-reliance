@@ -5,10 +5,10 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY generator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY generator /app
 
 RUN useradd -m generator
 USER generator
