@@ -24,7 +24,7 @@ COPY pipeline/streaming/       /app/pipeline/streaming/
 COPY inference/__init__.py     /app/inference/
 COPY inference/run_inference.py /app/inference/run_inference.py
 
-RUN useradd -u 1000 -m inference
+RUN groupadd -g 1000 inference && useradd -u 1000 -g 1000 -m inference
 USER 1000
 
 CMD ["python", "-m", "inference.run_inference"]

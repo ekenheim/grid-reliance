@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY generator /app
 
-RUN useradd -u 1000 -m generator
+RUN groupadd -g 1000 generator && useradd -u 1000 -g 1000 -m generator
 USER 1000
 
 ENTRYPOINT ["python", "generate.py"]

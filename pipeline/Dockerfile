@@ -25,7 +25,7 @@ COPY data-engineering/scripts/ /app/data-engineering/scripts/
 ENV DAGSTER_HOME=/opt/dagster
 RUN mkdir -p /opt/dagster && chmod 777 /opt/dagster
 
-RUN useradd -u 1000 -m pipeline
+RUN groupadd -g 1000 pipeline && useradd -u 1000 -g 1000 -m pipeline
 USER 1000
 
 CMD ["dagster", "api", "grpc", "-m", "pipeline.dagster.repository", "-h", "0.0.0.0", "-p", "4000"]

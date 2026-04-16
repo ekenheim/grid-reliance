@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy api as /app/api so "from api.data" resolves (api is the package)
 COPY api /app/api
 
-RUN useradd -u 1000 -m api
+RUN groupadd -g 1000 api && useradd -u 1000 -g 1000 -m api
 USER 1000
 
 EXPOSE 8000
