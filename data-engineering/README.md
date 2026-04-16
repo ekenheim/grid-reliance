@@ -65,6 +65,17 @@ Spark jobs read from Bronze and write model-ready Parquet to Silver. Use **Spark
 - **Local / dev:** MinIO (e.g. `docker compose`); buckets can be `grid-resilience-bronze`, `grid-resilience-silver`, `grid-resilience-gold` or a single bucket with prefixes.
 - **Homelab (Talos / Flux):** Ceph RGW via ObjectBucketClaims: `grid-resilience-bronze`, `grid-resilience-silver`, `grid-resilience-gold`. See [Infrastructure alignment](../docs/infrastructure-alignment.md).
 
+## Container image
+
+The image is based on `apache/spark` and runs as **UID 185** (user `spark`). Platform manifests should set:
+
+```yaml
+securityContext:
+  runAsUser: 185
+  runAsNonRoot: true
+  fsGroup: 185
+```
+
 ## ENTSO-E (later)
 
 - Get a security token from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/).

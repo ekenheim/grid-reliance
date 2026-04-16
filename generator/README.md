@@ -12,6 +12,17 @@ Generates synthetic weather and grid data for 8 Nordic zones × 5 years hourly.
 - **PostgreSQL output**: Partitioned tables (weather_obs, grid_demand, spot_prices).
 - **Optional MinIO**: Can write Parquet to MinIO for pipeline ingestion.
 
+## Container image
+
+The image runs as **UID 1000** (user `generator`). Platform manifests should set:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+```
+
 ## Usage
 
 **Start PostgreSQL (from repo root):**

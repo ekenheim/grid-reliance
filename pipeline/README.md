@@ -36,6 +36,17 @@ If you don't activate the venv, run via the venv Python:
 
 Or: `dg dev -m pipeline.dagster.repository` (if the Dagster CLI is installed).
 
+## Container image
+
+The image runs as **UID 1000** (user `pipeline`). Platform manifests should set:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+```
+
 ## Environment variables
 
 - `PG_CONNECTION_STRING` (PostgreSQL; default for local: `postgresql://grid_resilience:grid_resilience@localhost:5432/grid_resilience`)

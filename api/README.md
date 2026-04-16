@@ -30,6 +30,17 @@ Server: **http://127.0.0.1:8000**
 
 When S3/MinIO is configured and the **Gold** bucket (or the configured bucket) contains `dagster/tail_risk_forecasts.parquet` and `dagster/hsgp_model.pkl`, the API returns real data (`"status": "ok"`). Otherwise it returns stub data (`"status": "stub"`).
 
+## Container image
+
+The image runs as **UID 1000** (user `api`). Platform manifests should set:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+```
+
 ## Environment
 
 - **S3-compatible storage (MinIO or Ceph RGW):** Either MinIO-style or Rook-style env.

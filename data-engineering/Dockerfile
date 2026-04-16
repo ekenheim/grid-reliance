@@ -21,5 +21,5 @@ COPY data-engineering/processing/spark_era5_ingest.py /opt/spark/job/spark_era5_
 COPY data-engineering/processing/entsoe_ingest.py     /opt/spark/job/entsoe_ingest.py
 COPY data-engineering/scripts/ /opt/spark/scripts/
 
-# Spark Operator runs the job as the spark user
-USER spark
+# Spark Operator runs the job as the spark user (UID 185 in apache/spark base)
+USER 185

@@ -31,6 +31,17 @@ inference/
 
 Optional: `SILVER_PREFIX` (default `silver`) for the object key prefix.
 
+## Container image
+
+The image runs as **UID 1000** (user `inference`). Platform manifests should set:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+```
+
 ## Run
 
 - **In-cluster:** Apply the RayJob (after fixing image and secret/configMap names in [bayesian-grid-model.yaml](bayesian-grid-model.yaml)):

@@ -33,4 +33,5 @@ COPY pipeline/model/           /home/ray/pipeline/model/
 # Set PYTHONPATH without extending an undefined variable (avoids BuildKit warning)
 ENV PYTHONPATH=/home/ray
 
-USER ray
+# ray user is UID 1000 in rayproject/ray base
+USER 1000

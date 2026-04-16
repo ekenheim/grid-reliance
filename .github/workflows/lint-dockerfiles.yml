@@ -1,0 +1,36 @@
+name: Lint Dockerfiles
+
+on:
+  pull_request:
+    paths:
+      - "**/Dockerfile*"
+  push:
+    branches: [main]
+    paths:
+      - "**/Dockerfile*"
+
+jobs:
+  numeric-user:
+    name: Require numeric USER directives
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check USER directives are numeric
+        run: |
+          rc=0
+          for df in $(find . -name 'Dockerfile*' -not -path './.venv/*'); do
+            # Extract final USER directive (the one the container runs as).
+            # Ignore "USER root" lines that are used mid-build for apt/pip.
+            final_user=$(grep -i '^USER ' "$df" | tail -1 || true)
+            if [ -z "$final_user" ]; then
+              continue
+            fi
+            uid=$(echo "$final_user" | awk '{print $2}' | cut -d: -f1)
+            if ! echo "$uid" | grep -qE '^[0-9]+$'; then
+              echo "::error file=${df}::Final USER directive must be numeric (got '${uid}'). Kubernetes runAsNonRoot requires a numeric UID."
+              rc=1
+            fi
+          done
+          exit $rc

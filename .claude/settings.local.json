@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(python -m pytest tests/test_hsgp_model.py -v --tb=short)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "WebFetch(domain:www.pymc-labs.com)"
+    ]
+  }
+}
