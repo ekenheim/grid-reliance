@@ -518,15 +518,31 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
     required_resource_keys={"gold"},
 )
 def tail_risk_forecasts(context, hsgp_model: dict, grid_snapshots: pd.DataFrame) -> Output[pd.DataFrame]:
-    """Generate probabilistic tail-risk forecasts from HSGP posterior predictive."""
+    """Generate probabilistic tail-risk forecasts from HSGP posterior predictive.
+
+    Columns produced per (timestamp, region_id, horizon_h):
+      - p_shortfall:  P(wind < threshold)
+      - cvar_shortfall: expected shortfall severity in worst 5% of scenarios (m/s)
+      - wind_p10/p50/p90: wind speed quantiles from posterior predictive
+    """
     from pipeline.model.feature_engineering import prepare_hsgp_2d_input
-    from pipeline.model.hsgp_model import build_hsgp_model, sample_posterior_predictive, compute_tail_risk
+    from pipeline.model.hsgp_model import (
+        build_hsgp_model,
+        sample_posterior_predictive,
+        compute_tail_risk,
+        compute_cvar,
+        compute_quantiles,
+    )
     import arviz as az
 
+    empty_cols = [
+        "timestamp", "region_id", "horizon_h", "p_shortfall",
+        "cvar_shortfall", "wind_p10", "wind_p50", "wind_p90",
+    ]
     idata_path = hsgp_model.get("idata_path")
     if not idata_path or grid_snapshots.empty:
         return Output(
-            pd.DataFrame(columns=["timestamp", "region_id", "horizon_h", "p_shortfall"]),
+            pd.DataFrame(columns=empty_cols),
             metadata={"num_rows": 0, "source": "skip"},
         )
     gold = context.resources.gold
@@ -557,12 +573,18 @@ def tail_risk_forecasts(context, hsgp_model: dict, grid_snapshots: pd.DataFrame)
         temporal_coords_new = np.full(n_zones, temporal_norm, dtype=np.float64)
         samples = sample_posterior_predictive(result_tmp, spatial_coords_new, temporal_coords_new, n_samples=500)
         p_shortfall = compute_tail_risk(samples, threshold_mps=3.0)
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        quantiles = compute_quantiles(samples, quantiles=(0.10, 0.50, 0.90))
         for i, zid in enumerate(zone_ids):
             rows.append({
                 "timestamp": t_new,
                 "region_id": zid,
                 "horizon_h": horizon_h,
                 "p_shortfall": float(p_shortfall[i]),
+                "cvar_shortfall": float(cvar[i]),
+                "wind_p10": float(quantiles["p10"][i]),
+                "wind_p50": float(quantiles["p50"][i]),
+                "wind_p90": float(quantiles["p90"][i]),
             })
     df = pd.DataFrame(rows)
     return Output(

@@ -271,6 +271,8 @@ def main() -> int:
     from pipeline.model.hsgp_model import (
         build_hsgp_model,
         compute_tail_risk,
+        compute_cvar,
+        compute_quantiles,
         sample_posterior_predictive,
     )
 
@@ -338,12 +340,18 @@ def main() -> int:
             result_tmp, spatial_coords_new, temporal_coords_new, n_samples=500
         )
         p_shortfall = compute_tail_risk(samples, threshold_mps=3.0)
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        quantiles = compute_quantiles(samples, quantiles=(0.10, 0.50, 0.90))
         for i, zid in enumerate(zone_ids):
             rows.append({
                 "timestamp": t_new,
                 "region_id": zid,
                 "horizon_h": horizon_h,
                 "p_shortfall": float(p_shortfall[i]),
+                "cvar_shortfall": float(cvar[i]),
+                "wind_p10": float(quantiles["p10"][i]),
+                "wind_p50": float(quantiles["p50"][i]),
+                "wind_p90": float(quantiles["p90"][i]),
             })
 
     forecasts_df = pd.DataFrame(rows)

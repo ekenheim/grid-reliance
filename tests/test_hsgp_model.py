@@ -13,6 +13,8 @@ import pytest
 
 from pipeline.model.hsgp_model import (
     build_hsgp_model,
+    compute_cvar,
+    compute_quantiles,
     compute_tail_risk,
     train_hsgp,
 )
@@ -195,3 +197,86 @@ class TestComputeTailRisk:
         p = compute_tail_risk(samples, threshold_mps=3.0)
         assert p.shape == (5,)
         assert np.all((p >= 0) & (p <= 1))
+
+
+# ---------------------------------------------------------------------------
+# CVaR tests (pure numpy, no sampling)
+# ---------------------------------------------------------------------------
+
+class TestComputeCVaR:
+    def test_no_shortfall_returns_zeros(self):
+        """When all samples are above threshold, CVaR should be zero everywhere."""
+        samples = np.full((100, 3), 10.0)
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        np.testing.assert_array_equal(cvar, [0.0, 0.0, 0.0])
+
+    def test_full_shortfall_returns_positive(self):
+        """When all samples are below threshold, CVaR should equal the shortfall."""
+        samples = np.full((100, 3), 1.0)  # shortfall = 3.0 - 1.0 = 2.0
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        np.testing.assert_allclose(cvar, [2.0, 2.0, 2.0])
+
+    def test_cvar_focuses_on_tail(self):
+        """CVaR with alpha=0.05 should reflect the worst 5% of scenarios."""
+        rng = np.random.default_rng(42)
+        # 95 samples at 10 m/s (no shortfall), 5 samples at 1 m/s (shortfall=2)
+        samples = np.vstack([
+            np.full((95, 2), 10.0),
+            np.full((5, 2), 1.0),
+        ])
+        rng.shuffle(samples)  # shuffle to ensure sorting works
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        # Worst 5% are the 5 samples at 1.0 → shortfall=2.0
+        np.testing.assert_allclose(cvar, [2.0, 2.0], atol=0.1)
+
+    def test_output_shape(self):
+        rng = np.random.default_rng(0)
+        samples = rng.normal(7, 2, size=(200, 9))
+        cvar = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        assert cvar.shape == (9,)
+        assert np.all(cvar >= 0)
+
+    def test_higher_alpha_includes_more_scenarios(self):
+        """alpha=0.50 should give lower CVaR than alpha=0.05 when tail is severe."""
+        rng = np.random.default_rng(42)
+        samples = rng.normal(4, 2, size=(1000, 3))  # some above, some below 3.0
+        cvar_05 = compute_cvar(samples, threshold_mps=3.0, alpha=0.05)
+        cvar_50 = compute_cvar(samples, threshold_mps=3.0, alpha=0.50)
+        # Worst 5% should be more severe than worst 50%
+        assert np.all(cvar_05 >= cvar_50)
+
+
+# ---------------------------------------------------------------------------
+# Quantile tests (pure numpy, no sampling)
+# ---------------------------------------------------------------------------
+
+class TestComputeQuantiles:
+    def test_default_quantiles(self):
+        rng = np.random.default_rng(42)
+        samples = rng.normal(7, 2, size=(1000, 4))
+        q = compute_quantiles(samples)
+        assert set(q.keys()) == {"p10", "p50", "p90"}
+        for key in ("p10", "p50", "p90"):
+            assert q[key].shape == (4,)
+
+    def test_quantile_ordering(self):
+        rng = np.random.default_rng(42)
+        samples = rng.normal(7, 2, size=(1000, 3))
+        q = compute_quantiles(samples)
+        assert np.all(q["p10"] <= q["p50"])
+        assert np.all(q["p50"] <= q["p90"])
+
+    def test_constant_samples(self):
+        samples = np.full((100, 2), 5.0)
+        q = compute_quantiles(samples)
+        np.testing.assert_allclose(q["p10"], [5.0, 5.0])
+        np.testing.assert_allclose(q["p50"], [5.0, 5.0])
+        np.testing.assert_allclose(q["p90"], [5.0, 5.0])
+
+    def test_custom_quantiles(self):
+        rng = np.random.default_rng(0)
+        samples = rng.normal(7, 2, size=(500, 2))
+        q = compute_quantiles(samples, quantiles=(0.05, 0.25, 0.75, 0.95))
+        assert set(q.keys()) == {"p5", "p25", "p75", "p95"}
+        assert np.all(q["p5"] <= q["p25"])
+        assert np.all(q["p75"] <= q["p95"])

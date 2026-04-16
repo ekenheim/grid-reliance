@@ -87,6 +87,67 @@ def get_forecast_for_region(region_id: str, horizon_h: int) -> float | None:
     return float(row["p_shortfall"].iloc[0])
 
 
+def get_scenarios_for_region(region_id: str, horizon_h: int) -> dict | None:
+    """
+    Read tail_risk_forecasts from MinIO and return the full risk profile
+    for a given region and horizon: p_shortfall, CVaR, and P10/P50/P90 quantiles.
+
+    Returns None if data is missing. Returns a dict suitable for JSON response.
+    """
+    client, bucket = _get_s3_client()
+    if not client or not bucket:
+        return None
+    try:
+        response = client.get_object(Bucket=bucket, Key=FORECASTS_KEY)
+        buf = io.BytesIO(response["Body"].read())
+        df = pd.read_parquet(buf)
+    except Exception:
+        return None
+    if df.empty or "region_id" not in df.columns:
+        return None
+    mask = df["region_id"] == region_id
+    if "horizon_h" in df.columns:
+        mask = mask & (df["horizon_h"] == horizon_h)
+    row = df[mask]
+    if row.empty:
+        return None
+    r = row.iloc[0]
+    result = {
+        "region_id": region_id,
+        "horizon_h": horizon_h,
+        "p_shortfall": float(r["p_shortfall"]) if "p_shortfall" in r else None,
+        "cvar_shortfall": float(r["cvar_shortfall"]) if "cvar_shortfall" in r else None,
+        "wind_p10": float(r["wind_p10"]) if "wind_p10" in r else None,
+        "wind_p50": float(r["wind_p50"]) if "wind_p50" in r else None,
+        "wind_p90": float(r["wind_p90"]) if "wind_p90" in r else None,
+    }
+    return result
+
+
+def get_all_scenarios() -> list[dict] | None:
+    """
+    Read the full tail_risk_forecasts table from MinIO.
+
+    Returns a list of dicts (one per region/horizon) with all risk columns,
+    or None if data is unavailable.
+    """
+    client, bucket = _get_s3_client()
+    if not client or not bucket:
+        return None
+    try:
+        response = client.get_object(Bucket=bucket, Key=FORECASTS_KEY)
+        buf = io.BytesIO(response["Body"].read())
+        df = pd.read_parquet(buf)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    # Convert timestamp to ISO string for JSON serialisation
+    if "timestamp" in df.columns:
+        df["timestamp"] = df["timestamp"].astype(str)
+    return df.to_dict(orient="records")
+
+
 def get_spatial_correlation() -> tuple[list[str], list[list[float]]] | None:
     """
     Read hsgp_model pickle from MinIO and return (zone_ids, correlation_matrix).

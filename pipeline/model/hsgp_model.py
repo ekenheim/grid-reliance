@@ -244,3 +244,63 @@ def compute_tail_risk(
         (n_new,) array of probabilities.
     """
     return np.mean(samples < threshold_mps, axis=0)
+
+
+def compute_cvar(
+    samples: np.ndarray,
+    threshold_mps: float = 3.0,
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """
+    Conditional Value-at-Risk: expected shortfall severity in the worst
+    alpha-fraction of scenarios (Rockafellar-Uryasev formulation).
+
+    While compute_tail_risk answers "what is the probability of wind drought?",
+    CVaR answers "in the worst 5% of outcomes, how severe is the shortfall
+    per zone?" — the information a grid operator needs for dispatch decisions.
+
+    Args:
+        samples: (n_samples, n_zones) wind speed draws from posterior predictive.
+        threshold_mps: Wind speed below which generation is considered insufficient.
+        alpha: Tail fraction (0.05 = worst 5% of scenarios).
+
+    Returns:
+        (n_zones,) expected shortfall (m/s below threshold) per zone,
+        averaged over the worst-alpha scenarios. Zero means no shortfall
+        in the tail.
+    """
+    # Per-sample, per-zone shortfall (clipped at zero — no "bonus" for high wind)
+    shortfall = np.maximum(threshold_mps - samples, 0.0)  # (n_samples, n_zones)
+
+    # Rank scenarios by total cross-zone shortfall (worst = highest total)
+    total_shortfall = shortfall.sum(axis=1)  # (n_samples,)
+    cutoff_idx = max(1, int(np.ceil(alpha * len(total_shortfall))))
+    cutoff = np.sort(total_shortfall)[-cutoff_idx]
+
+    tail_mask = total_shortfall >= cutoff
+    if not tail_mask.any():
+        return np.zeros(samples.shape[1])
+
+    # Expected per-zone shortfall conditional on being in the tail
+    return shortfall[tail_mask].mean(axis=0)
+
+
+def compute_quantiles(
+    samples: np.ndarray,
+    quantiles: tuple[float, ...] = (0.10, 0.50, 0.90),
+) -> dict[str, np.ndarray]:
+    """
+    Compute wind speed quantiles from posterior predictive samples.
+
+    Args:
+        samples: (n_samples, n_zones) wind speed draws.
+        quantiles: Tuple of quantile levels (e.g. 0.10 for P10).
+
+    Returns:
+        Dict mapping "p10", "p50", "p90" (etc.) to (n_zones,) arrays.
+    """
+    result = {}
+    for q in quantiles:
+        label = f"p{int(q * 100)}"
+        result[label] = np.quantile(samples, q, axis=0)
+    return result
