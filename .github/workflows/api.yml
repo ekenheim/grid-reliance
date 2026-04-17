@@ -3,10 +3,11 @@ name: Build API Image
 on:
   push:
     branches: [main]
-    tags: ["v*"]
     paths:
       - "api/**"
       - ".github/workflows/api.yml"
+  workflow_dispatch: {}
+# Tag builds live in release.yml (all six images, lockstep).
 
 env:
   REGISTRY: ghcr.io

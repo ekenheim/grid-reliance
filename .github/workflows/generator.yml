@@ -3,10 +3,11 @@ name: Build Generator Image
 on:
   push:
     branches: [main]
-    tags: ["v*"]
     paths:
       - "generator/**"
       - ".github/workflows/generator.yml"
+  workflow_dispatch: {}
+# Tag builds live in release.yml (all six images, lockstep).
 
 env:
   REGISTRY: ghcr.io
