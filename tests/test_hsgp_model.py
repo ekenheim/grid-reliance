@@ -140,6 +140,34 @@ class TestTrainHSGP:
         assert "zone_ids" in metadata
         assert set(metadata["zone_ids"]) == {"SE1", "SE2", "SE3", "SE4"}
 
+    def test_train_invalid_method_raises(self, synthetic_grid_snapshots):
+        with pytest.raises(ValueError, match="method must be"):
+            train_hsgp(synthetic_grid_snapshots, method="bogus")
+
+    def test_train_svi_returns_posterior_samples(self, synthetic_grid_snapshots):
+        """SVI should produce an InferenceData with posterior draws of the HSGP hyperparameters.
+
+        ADVI on the small synthetic dataset is fast enough (~seconds) to run
+        unmocked — this validates that the SVI code path produces the same
+        downstream shape MCMC does.
+        """
+        result = train_hsgp(
+            synthetic_grid_snapshots,
+            method="svi",
+            m_spatial=3,
+            m_temporal=5,
+            svi_n_iter=200,
+            svi_n_samples=50,
+            random_seed=0,
+        )
+        idata = result["idata"]
+        assert idata is not None
+        assert hasattr(idata, "posterior")
+        for var in ("ell_spatial", "ell_temporal", "eta", "sigma"):
+            assert var in idata.posterior
+        # posterior shape: (chain=1, draw=svi_n_samples)
+        assert idata.posterior["eta"].shape[-1] == 50
+
 
 # ---------------------------------------------------------------------------
 # Feature engineering tests (no sampling needed)

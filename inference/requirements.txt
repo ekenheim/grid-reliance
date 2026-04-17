@@ -3,7 +3,9 @@
 #   kubectl exec -n datasci -l ray.io/node-type=head -- ray --version
 ray[default]>=2.40.0
 
-# Bayesian model dependencies (also installed on workers via runtime_env)
+# Bayesian model dependencies — pre-installed on workers via the
+# grid-resilience-ray-worker image (see ray-worker/requirements-worker.txt),
+# and in the submitter pod image for driver-side imports.
 pymc>=5.27.1,<6
 nutpie>=0.16
 arviz>=0.23.4,<0.24

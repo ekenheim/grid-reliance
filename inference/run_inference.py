@@ -38,10 +38,25 @@ MODEL_KEY = f"{PREFIX}/hsgp_model.pkl"
 TEMPORAL_SCALE_H = 168.0
 
 # Number of chains to distribute across Ray workers.
-# Each chain runs on one worker with num_cpus=2 and up to 6 GiB RAM.
-N_CHAINS = 4
-DRAWS = 300
-TUNE = 200
+# Each chain runs on one worker with num_cpus=CPUS_PER_CHAIN and up to 6 GiB RAM.
+# HSGP gradient evaluation is BLAS-bound at N>>M, so bumping CPUS_PER_CHAIN above
+# 1 gives real per-chain speedups via multi-threaded matmul (OMP/MKL). Returns
+# saturate around 4 cores because the N×M design matrix exceeds L3 cache and
+# memory bandwidth becomes the bottleneck.
+N_CHAINS = int(os.environ.get("HSGP_N_CHAINS", "4"))
+CPUS_PER_CHAIN = int(os.environ.get("HSGP_CPUS_PER_CHAIN", "4"))
+MEMORY_PER_CHAIN_GIB = int(os.environ.get("HSGP_MEMORY_PER_CHAIN_GIB", "6"))
+
+# Inference method: "mcmc" (chain-parallel NUTS) or "svi" (single-task ADVI).
+# SVI runs on one worker and typically finishes in minutes vs. hours for MCMC
+# at N>>100k. Trades exact posterior for a mean-field approximation.
+HSGP_METHOD = os.environ.get("HSGP_METHOD", "mcmc").lower()
+
+DRAWS = int(os.environ.get("HSGP_DRAWS", "300"))
+TUNE = int(os.environ.get("HSGP_TUNE", "200"))
+SVI_METHOD = os.environ.get("HSGP_SVI_METHOD", "advi").lower()
+SVI_N_ITER = int(os.environ.get("HSGP_SVI_N_ITER", "50000"))
+SVI_N_SAMPLES = int(os.environ.get("HSGP_SVI_N_SAMPLES", "2000"))
 M_SPATIAL = 5
 M_TEMPORAL = 10
 
@@ -127,6 +142,22 @@ def write_forecasts_and_model_to_gold(forecasts_df: pd.DataFrame, model_dict: di
 # Ray-distributed chain sampling
 # ---------------------------------------------------------------------------
 
+def _set_thread_env(n_cpus: int) -> None:
+    """Pin BLAS/XLA thread counts to the Ray reservation so we use the CPUs we
+    asked for (and no more — otherwise multiple chains on one node oversubscribe
+    and slow each other down). Must be called before importing numpy/jax/pymc."""
+    n = str(n_cpus)
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ.setdefault(var, n)
+    # JAX/XLA: pin intra-op parallelism; inter-op stays at 1 because a single
+    # MCMC chain has no inter-op parallelism to exploit.
+    os.environ.setdefault(
+        "XLA_FLAGS",
+        f"--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads={n_cpus}",
+    )
+
+
 def _sample_one_chain(
     X: np.ndarray,
     y: np.ndarray,
@@ -136,6 +167,7 @@ def _sample_one_chain(
     draws: int,
     tune: int,
     random_seed: int,
+    cpus_per_chain: int = 2,
 ) -> bytes:
     """
     Run a single MCMC chain and return the InferenceData serialised as NetCDF bytes.
@@ -144,6 +176,7 @@ def _sample_one_chain(
     so the full chain count is achieved by launching N parallel tasks. The
     random_seed is offset by chain_idx so each chain explores independently.
     """
+    _set_thread_env(cpus_per_chain)
     import pymc as pm
     from pipeline.model.hsgp_model import build_hsgp_model
 
@@ -176,23 +209,63 @@ def _sample_one_chain(
     return buf.getvalue()
 
 
+def _fit_svi(
+    X: np.ndarray,
+    y: np.ndarray,
+    m_spatial: int,
+    m_temporal: int,
+    n_iter: int,
+    n_samples: int,
+    random_seed: int,
+    svi_method: str = "advi",
+    cpus: int = 4,
+) -> bytes:
+    """
+    Fit ADVI on one worker and return InferenceData bytes. SVI is not
+    chain-parallelisable (it's a single optimisation), so distributing across
+    Ray makes no sense — we run it on exactly one worker with more CPUs.
+    """
+    _set_thread_env(cpus)
+    import pymc as pm
+    from pipeline.model.hsgp_model import build_hsgp_model
+
+    n_obs = X.shape[0]
+    coords = {"obs": np.arange(n_obs)}
+    model, _ = build_hsgp_model(X, y, m_spatial=m_spatial, m_temporal=m_temporal, coords=coords)
+    with model:
+        approx = pm.fit(n=n_iter, method=svi_method, random_seed=random_seed, progressbar=False)
+        idata = approx.sample(n_samples, random_seed=random_seed)
+    buf = io.BytesIO()
+    idata.to_netcdf(buf)
+    return buf.getvalue()
+
+
 def train_hsgp_distributed(
     grid_snapshots: pd.DataFrame,
+    method: str = "mcmc",
     m_spatial: int = M_SPATIAL,
     m_temporal: int = M_TEMPORAL,
     draws: int = DRAWS,
     tune: int = TUNE,
     n_chains: int = N_CHAINS,
+    cpus_per_chain: int = CPUS_PER_CHAIN,
+    memory_per_chain_gib: int = MEMORY_PER_CHAIN_GIB,
+    svi_method: str = SVI_METHOD,
+    svi_n_iter: int = SVI_N_ITER,
+    svi_n_samples: int = SVI_N_SAMPLES,
     random_seed: int = 42,
 ) -> dict[str, Any]:
     """
-    Train the HSGP model with chain sampling distributed across Ray workers.
+    Train the HSGP model on the Ray cluster.
 
-    Each chain runs on a separate worker (num_cpus=2, memory=6 GiB).
-    InferenceData from all chains is concatenated with arviz.concat.
+    method="mcmc": chain sampling distributed across workers (one chain per
+    ray.remote task, num_cpus=cpus_per_chain each). InferenceData from all
+    chains is concatenated with arviz.concat.
 
-    Returns the same dict shape as pipeline.model.hsgp_model.train_hsgp so
-    that downstream tail-risk computation is unchanged.
+    method="svi": single ADVI task on one worker. SVI is a single optimisation,
+    not chain-parallelisable — it gets one worker with more CPUs.
+
+    Returns the same dict shape as pipeline.model.hsgp_model.train_hsgp.
     """
     import ray
     import arviz as az
@@ -201,40 +274,61 @@ def train_hsgp_distributed(
 
     X, y, metadata = prepare_hsgp_2d_input(grid_snapshots)
     n_obs = X.shape[0]
-    print(
-        f"Starting {n_chains} Ray chains  |  n_obs={n_obs}  "
-        f"m=[{m_spatial},{m_temporal}]  draws={draws}  tune={tune}",
-        file=sys.stderr,
-    )
 
-    # Decorate the sampling function as a Ray remote task.
-    # Resource spec: 2 CPUs per chain (nutpie uses threading), 6 GiB memory.
-    # PyMC/nutpie/zarr are pre-installed in the ghcr.io/ekenheim/grid-resilience-ray-worker
-    # image — no runtime_env pip install needed (avoids conda base resolution failures).
-    sample_remote = ray.remote(
-        num_cpus=2,
-        memory=6 * 1024 ** 3,
-    )(_sample_one_chain)
-
-    futures = [
-        sample_remote.remote(
-            X=X, y=y,
-            chain_idx=i,
-            m_spatial=m_spatial,
-            m_temporal=m_temporal,
-            draws=draws,
-            tune=tune,
-            random_seed=random_seed,
+    if method == "svi":
+        print(
+            f"Starting Ray SVI task  |  n_obs={n_obs}  m=[{m_spatial},{m_temporal}]  "
+            f"n_iter={svi_n_iter}  n_samples={svi_n_samples}  cpus={cpus_per_chain}",
+            file=sys.stderr,
         )
-        for i in range(n_chains)
-    ]
+        svi_remote = ray.remote(
+            num_cpus=cpus_per_chain,
+            memory=memory_per_chain_gib * 1024 ** 3,
+        )(_fit_svi)
+        svi_bytes = ray.get(svi_remote.remote(
+            X=X, y=y,
+            m_spatial=m_spatial, m_temporal=m_temporal,
+            n_iter=svi_n_iter, n_samples=svi_n_samples,
+            random_seed=random_seed,
+            svi_method=svi_method,
+            cpus=cpus_per_chain,
+        ))
+        idata = az.from_netcdf(io.BytesIO(svi_bytes))
+        print("SVI fit complete.", file=sys.stderr)
+    else:
+        print(
+            f"Starting {n_chains} Ray chains  |  n_obs={n_obs}  "
+            f"m=[{m_spatial},{m_temporal}]  draws={draws}  tune={tune}  "
+            f"cpus_per_chain={cpus_per_chain}",
+            file=sys.stderr,
+        )
+        # PyMC/nutpie/numpyro are pre-installed in the grid-resilience-ray-worker
+        # image — no runtime_env pip install needed.
+        sample_remote = ray.remote(
+            num_cpus=cpus_per_chain,
+            memory=memory_per_chain_gib * 1024 ** 3,
+        )(_sample_one_chain)
 
-    chain_bytes: list[bytes] = ray.get(futures)
-    print(f"All {n_chains} chains complete.", file=sys.stderr)
+        futures = [
+            sample_remote.remote(
+                X=X, y=y,
+                chain_idx=i,
+                m_spatial=m_spatial,
+                m_temporal=m_temporal,
+                draws=draws,
+                tune=tune,
+                random_seed=random_seed,
+                cpus_per_chain=cpus_per_chain,
+            )
+            for i in range(n_chains)
+        ]
 
-    # Deserialise and concatenate across the "chain" dimension
-    idatas = [az.from_netcdf(io.BytesIO(b)) for b in chain_bytes]
-    idata = az.concat(idatas, dim="chain")
+        chain_bytes: list[bytes] = ray.get(futures)
+        print(f"All {n_chains} chains complete.", file=sys.stderr)
+
+        # Deserialise and concatenate across the "chain" dimension
+        idatas = [az.from_netcdf(io.BytesIO(b)) for b in chain_bytes]
+        idata = az.concat(idatas, dim="chain")
 
     # Derive spatial correlation proxy from posterior hyperparameters
     spatial_correlation: np.ndarray | None = None
@@ -298,11 +392,17 @@ def main() -> int:
 
     result = train_hsgp_distributed(
         grid_snapshots,
+        method=HSGP_METHOD,
         m_spatial=M_SPATIAL,
         m_temporal=M_TEMPORAL,
         draws=DRAWS,
         tune=TUNE,
         n_chains=N_CHAINS,
+        cpus_per_chain=CPUS_PER_CHAIN,
+        memory_per_chain_gib=MEMORY_PER_CHAIN_GIB,
+        svi_method=SVI_METHOD,
+        svi_n_iter=SVI_N_ITER,
+        svi_n_samples=SVI_N_SAMPLES,
         random_seed=42,
     )
 

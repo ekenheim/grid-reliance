@@ -13,8 +13,8 @@ WORKDIR /app
 COPY inference/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pipeline model code (needed by the remote tasks via runtime_env pip install,
-# but also present in the submitter image for local imports)
+# Pipeline model code — imported by the submitter pod (driver) and also baked
+# into the ray-worker image so workers can import it without a runtime_env.
 COPY pipeline/__init__.py      /app/pipeline/
 COPY pipeline/model/           /app/pipeline/model/
 COPY pipeline/dagster/         /app/pipeline/dagster/

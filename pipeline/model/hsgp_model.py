@@ -5,13 +5,16 @@ Uses separable kernel: spatial Matern 3/2 × temporal Matern 5/2.
 HSGP approximation reduces inference from O(N^3) to O(N*M^2) for tractable
 training on 5 years of hourly data (8 Nordic zones).
 
-MCMC with Nutpie for proper posterior and tail-risk; SVI/NumPyro optional in Phase 2.
+Two inference paths:
+  - method="mcmc": Nutpie/numpyro NUTS — proper posterior, slow at N>>100k.
+  - method="svi":  ADVI mean-field variational — minutes instead of hours,
+                   approximate posterior; good default when N is large.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -71,34 +74,130 @@ def build_hsgp_model(
     return model, gp
 
 
+def _pick_nuts_sampler() -> str:
+    """Prefer nutpie (fast, Rust-backed), fall back to numpyro (JAX), then stock PyMC."""
+    try:
+        import nutpie  # noqa: F401
+        return "nutpie"
+    except ImportError:
+        pass
+    try:
+        import numpyro  # noqa: F401
+        return "numpyro"
+    except ImportError:
+        logger.warning(
+            "Neither nutpie nor numpyro installed; falling back to stock PyMC NUTS "
+            "(order-of-magnitude slower). Install with: pip install nutpie"
+        )
+        return "pymc"
+
+
+def _sample_mcmc(model, draws: int, tune: int, chains: int, random_seed: int):
+    """Run NUTS sampling inside the given pm.Model context."""
+    import pymc as pm
+    sampler = _pick_nuts_sampler()
+    logger.info("HSGP MCMC: sampler=%s  draws=%d  tune=%d  chains=%d", sampler, draws, tune, chains)
+    with model:
+        return pm.sample(
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            nuts_sampler=sampler,
+            random_seed=random_seed,
+        )
+
+
+def _sample_svi(
+    model,
+    n_iter: int,
+    n_samples: int,
+    random_seed: int,
+    method: str = "advi",
+):
+    """Fit ADVI (mean-field or full-rank) to the model and draw `n_samples`.
+
+    method="advi" is mean-field (fast, assumes independent posterior factors).
+    method="fullrank_advi" captures hyperparameter correlations — preferable
+    for HSGP where ell_spatial, ell_temporal, eta are typically correlated,
+    at the cost of O(K^2) variational parameters.
+
+    Returns an InferenceData shaped like MCMC output (posterior group has
+    dims (chain=1, draw=n_samples)), so downstream code — spatial_correlation,
+    sample_posterior_predictive, diagnostics — works unchanged.
+    """
+    import pymc as pm
+    if method not in ("advi", "fullrank_advi"):
+        raise ValueError(f"SVI method must be 'advi' or 'fullrank_advi', got {method!r}")
+    logger.info("HSGP SVI: method=%s  n_iter=%d  n_samples=%d", method, n_iter, n_samples)
+    with model:
+        approx = pm.fit(
+            n=n_iter,
+            method=method,
+            random_seed=random_seed,
+            progressbar=False,
+        )
+        # ELBO convergence signal: compare the last 5% of the trace to the
+        # preceding 5%. If the improvement is still material, n_iter was too low
+        # and the approximation is under-fit.
+        try:
+            hist = np.asarray(approx.hist)
+            if hist.size >= 40:
+                tail = int(max(1, 0.05 * hist.size))
+                last = hist[-tail:].mean()
+                prev = hist[-2 * tail:-tail].mean()
+                rel_delta = abs(last - prev) / (abs(prev) + 1e-9)
+                logger.info(
+                    "ADVI ELBO: final=%.3g  last_5%%_mean=%.3g  prev_5%%_mean=%.3g  rel_delta=%.2e",
+                    float(hist[-1]), float(last), float(prev), float(rel_delta),
+                )
+                if rel_delta > 1e-3:
+                    logger.warning(
+                        "ADVI ELBO still improving (rel_delta=%.2e > 1e-3) — "
+                        "consider increasing svi_n_iter beyond %d for a tighter fit.",
+                        float(rel_delta), n_iter,
+                    )
+        except Exception as e:
+            logger.debug("ADVI ELBO convergence check skipped: %s", e)
+        return approx.sample(n_samples, random_seed=random_seed)
+
+
 def train_hsgp(
     grid_snapshots: pd.DataFrame,
+    method: Literal["mcmc", "svi"] = "mcmc",
     m_spatial: int = DEFAULT_M_SPATIAL,
     m_temporal: int = DEFAULT_M_TEMPORAL,
     draws: int = 500,
     tune: int = 500,
     chains: int = 2,
+    svi_method: Literal["advi", "fullrank_advi"] = "advi",
+    svi_n_iter: int = 50_000,
+    svi_n_samples: int = 2000,
     random_seed: int = 42,
     idata_path: str | None = None,
 ) -> dict:
     """
-    Train HSGP with MCMC (Nutpie NUTS).
+    Train HSGP via MCMC (NUTS) or SVI (ADVI).
 
     Args:
         grid_snapshots: DataFrame with columns timestamp, region_id, wind_speed_mps.
-        m_spatial: Spatial basis functions.
-        m_temporal: Temporal basis functions.
-        draws: Number of posterior draws per chain.
-        tune: Number of tuning steps per chain.
-        chains: Number of chains.
-        random_seed: Random seed.
-        idata_path: If set, save InferenceData to this path (NetCDF) immediately after sampling.
+        method: "mcmc" for full NUTS (slow, accurate) or "svi" for ADVI
+                (fast, approximate mean-field posterior). Use "svi" when N
+                is large enough that MCMC wall-time is prohibitive.
+        m_spatial, m_temporal: Number of HSGP basis functions per dimension.
+        draws, tune, chains: MCMC params (ignored for SVI).
+        svi_n_iter: ADVI optimisation steps (ignored for MCMC).
+        svi_n_samples: Draws from the fitted ADVI approximation (ignored for MCMC).
+        random_seed: Seed for sampler/optimiser.
+        idata_path: If set, write InferenceData NetCDF here immediately after sampling.
 
     Returns:
-        Dict with idata (or path), model (reference), metadata, spatial_correlation (optional).
+        Dict with idata, model, gp, metadata, spatial_correlation, idata_path.
     """
     from pipeline.model.feature_engineering import prepare_hsgp_2d_input
     import pymc as pm
+
+    if method not in ("mcmc", "svi"):
+        raise ValueError(f"method must be 'mcmc' or 'svi', got {method!r}")
 
     if grid_snapshots.empty or len(grid_snapshots) < 10:
         logger.warning("grid_snapshots empty or too small; returning stub result")
@@ -109,23 +208,15 @@ def train_hsgp(
     coords = {"obs": np.arange(n_obs)}
     model, gp = build_hsgp_model(X, y, m_spatial=m_spatial, m_temporal=m_temporal, coords=coords)
 
-    try:
-        import nutpie  # noqa: F401
-        nuts_sampler = "nutpie"
-    except ImportError:
-        nuts_sampler = "pymc"
-        logger.warning(
-            "nutpie not installed; using default PyMC NUTS (slower). "
-            "Install with: pip install nutpie  (or conda install -c conda-forge nutpie)"
-        )
-
-    with model:
-        idata = pm.sample(
-            draws=draws,
-            tune=tune,
-            chains=chains,
-            nuts_sampler=nuts_sampler,
+    if method == "mcmc":
+        idata = _sample_mcmc(model, draws=draws, tune=tune, chains=chains, random_seed=random_seed)
+    else:
+        idata = _sample_svi(
+            model,
+            n_iter=svi_n_iter,
+            n_samples=svi_n_samples,
             random_seed=random_seed,
+            method=svi_method,
         )
 
     # Save immediately after sampling to prevent data loss from late crashes
@@ -133,8 +224,9 @@ def train_hsgp(
         idata.to_netcdf(idata_path)
         logger.info("Saved idata to %s", idata_path)
 
-    # nutpie silently ignores idata_kwargs={"log_likelihood": True},
-    # so always compute log_likelihood explicitly after sampling.
+    # Both samplers can miss log_likelihood in the InferenceData — recompute
+    # explicitly so downstream LOO/WAIC works. SVI produces only posterior,
+    # so this adds the log_likelihood group in-place.
     try:
         pm.compute_log_likelihood(idata, model=model)
         if idata_path:

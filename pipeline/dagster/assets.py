@@ -461,13 +461,35 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
     except Exception:
         pass  # No stored hash, idata missing, or any other error — retrain.
 
+    # Inference method + sampler knobs are env-tunable so ops can switch a
+    # stuck MCMC run to SVI without a code deploy. "svi" runs ADVI (minutes,
+    # approximate posterior) — use when N is large enough that MCMC won't
+    # finish in an acceptable window.
+    method = os.environ.get("HSGP_METHOD", "mcmc").lower()
+    draws = int(os.environ.get("HSGP_DRAWS", "300"))
+    tune = int(os.environ.get("HSGP_TUNE", "200"))
+    chains = int(os.environ.get("HSGP_CHAINS", "2"))
+    # fullrank_advi captures hyperparameter correlations — preferred for HSGP
+    # but O(K^2) variational params. Default to mean-field for speed.
+    svi_method = os.environ.get("HSGP_SVI_METHOD", "advi").lower()
+    svi_n_iter = int(os.environ.get("HSGP_SVI_N_ITER", "50000"))
+    svi_n_samples = int(os.environ.get("HSGP_SVI_N_SAMPLES", "2000"))
+    context.log.info(
+        "hsgp_model: method=%s n_obs=%d  (MCMC: draws=%d tune=%d chains=%d | SVI: svi_method=%s n_iter=%d n_samples=%d)",
+        method, len(grid_snapshots), draws, tune, chains, svi_method, svi_n_iter, svi_n_samples,
+    )
+
     result = train_hsgp(
         grid_snapshots,
+        method=method,
         m_spatial=5,
         m_temporal=10,
-        draws=300,
-        tune=200,
-        chains=2,
+        draws=draws,
+        tune=tune,
+        chains=chains,
+        svi_method=svi_method,
+        svi_n_iter=svi_n_iter,
+        svi_n_samples=svi_n_samples,
         random_seed=42,
         idata_path=None,
     )
@@ -504,7 +526,7 @@ def hsgp_model(context, grid_snapshots: pd.DataFrame) -> Output[dict]:
     }
     return Output(
         out,
-        metadata={"model_type": "HSGP", "status": "trained", **metadata_extra},
+        metadata={"model_type": "HSGP", "method": method, "status": "trained", **metadata_extra},
     )
 
 
