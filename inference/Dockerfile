@@ -1,11 +1,18 @@
 FROM python:3.11-slim-bookworm
 
-# Security updates + build deps for JAX/NumPy/nutpie compilation
+# Security updates + build deps for JAX/NumPy/nutpie compilation.
+# libopenblas-dev gives PyTensor a system BLAS to link against at JIT compile
+# time. The submitter imports pymc/build_hsgp_model for posterior predictive
+# sampling, so the BLAS link matters here too — not just on the Ray workers.
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         gcc \
         g++ \
+        gfortran \
+        libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PYTENSOR_FLAGS="blas__ldflags=-lopenblas"
 
 WORKDIR /app
 

@@ -1,11 +1,21 @@
 FROM python:3.11-slim-bookworm
 
-# Apply security updates and install build deps for JAX/NumPy
+# Apply security updates and install build deps for JAX/NumPy.
+# libopenblas-dev gives PyTensor a system BLAS to link against at JIT compile
+# time; without it PyTensor warns "could not link to a BLAS installation" and
+# falls back to the single-threaded NumPy C-API path, which makes HSGP SVI
+# 5–10x slower than the threaded estimate.
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    gfortran \
+    libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Force PyTensor to use OpenBLAS rather than its (sometimes flaky)
+# auto-detection of numpy's vendored libraries.
+ENV PYTENSOR_FLAGS="blas__ldflags=-lopenblas"
 
 WORKDIR /app
 
